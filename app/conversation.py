@@ -1,5 +1,4 @@
 """The conversation loop: Ewe speech in, Muse Spark in the middle, Ewe speech out."""
-import asyncio
 import json
 import re
 import uuid
@@ -20,21 +19,15 @@ GREETING_EWE = "Woezɔ! Nye ŋkɔe nye EchoVoiice. Aleke mate ŋu akpe ɖe ŋuw�
 GREETING_FR = "Bienvenue ! Je m'appelle EchoVoiice. Comment puis-je vous aider aujourd'hui ?"
 
 REPLY_IN_EWE = "Reply in Ewe (Eʋegbe), the language the person speaks. Their messages are in Ewe."
-REPLY_IN_FRENCH = (
-    "Reply in simple French. The person's messages were translated from Ewe to French by a machine, "
-    "and your reply will be translated back to Ewe, so use plain words and short sentences."
-)
 
 
 @dataclass
 class Turn:
     user_text: str
     reply_ewe: str
-    reply_fr: Optional[str]
     staff_summary_fr: str
     urgent: bool
     department: Optional[str]
-    user_text_fr: Optional[str] = None
 
 
 @dataclass
@@ -54,16 +47,15 @@ def ewe_style_guide() -> str:
     return re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL).strip()
 
 
-def build_system_prompt(use_translation: bool, mode: str = "general") -> str:
+def build_system_prompt(mode: str = "general") -> str:
     template = (PROMPTS_DIR / f"{mode}.md").read_text(encoding="utf-8")
-    language = REPLY_IN_FRENCH if use_translation else REPLY_IN_EWE
     if mode == "hospital":
         facility = settings.facility_file.read_text(encoding="utf-8")
-        prompt = template.format(reply_language_instruction=language, facility=facility)
+        prompt = template.format(reply_language_instruction=REPLY_IN_EWE, facility=facility)
     else:
-        prompt = template.format(reply_language_instruction=language, today=date.today().strftime("%A %d %B %Y"))
-    if use_translation:
-        return prompt
+        prompt = template.format(
+            reply_language_instruction=REPLY_IN_EWE, today=date.today().strftime("%A %d %B %Y")
+        )
     return f"{prompt}\n\n{ewe_style_guide()}"
 
 
@@ -93,10 +85,8 @@ def parse_reply(raw: str) -> Dict:
 
 
 class Assistant:
-    def __init__(self, llm: ChatModel, translator=None, use_translation: bool = settings.use_translation):
+    def __init__(self, llm: ChatModel):
         self.llm = llm
-        self.translator = translator
-        self.use_translation = use_translation and translator is not None
         self.sessions: Dict[str, Session] = {}
 
     def start_session(self, mode: Optional[str] = None) -> Session:
@@ -113,27 +103,16 @@ class Assistant:
     async def respond(self, session: Session, user_text: str, alternatives: Optional[List[str]] = None) -> Turn:
         """user_text is what the person said; alternatives are other speech-recognition
         versions of the same audio, from models tuned for other kinds of Ewe."""
-        user_text_fr = None
         heard = [user_text] + [a for a in (alternatives or []) if a != user_text]
-        if self.use_translation:
-            heard = [await asyncio.to_thread(self.translator.ewe_to_french, h) for h in heard]
-            user_text_fr = heard[0]
         model_input = format_heard(heard)
 
-        messages = [{"role": "system", "content": build_system_prompt(self.use_translation, session.mode)}]
+        messages = [{"role": "system", "content": build_system_prompt(session.mode)}]
         messages += session.history
         messages.append({"role": "user", "content": model_input})
 
         raw = await self.llm.chat(messages)
         data = parse_reply(raw)
-        reply = data["reply"]
-
-        if self.use_translation:
-            reply_fr = reply
-            reply_ewe = await asyncio.to_thread(self.translator.french_to_ewe, reply)
-        else:
-            reply_fr = None
-            reply_ewe = reply
+        reply_ewe = data["reply"]
 
         session.history += [
             {"role": "user", "content": model_input},
@@ -148,9 +127,7 @@ class Assistant:
 
         turn = Turn(
             user_text=user_text,
-            user_text_fr=user_text_fr,
             reply_ewe=reply_ewe,
-            reply_fr=reply_fr,
             staff_summary_fr=session.staff_summary_fr,
             urgent=session.urgent,
             department=session.department,

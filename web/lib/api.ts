@@ -11,9 +11,7 @@ export interface SessionResponse {
 export interface TurnResponse {
   transcript: string;
   transcript_alternatives?: string[];
-  transcript_fr?: string | null;
   reply_ewe: string;
-  reply_fr?: string | null;
   audio_wav_base64?: string | null;
   tts_error?: string | null;
   staff_summary_fr?: string | null;

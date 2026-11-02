@@ -14,7 +14,6 @@ from .config import settings
 from . import language
 from .conversation import GREETING_EWE, GREETING_FR, Assistant, Turn
 from .llm import LLMError, MuseSparkClient
-from .translate import NLLBTranslator
 from .tts import EchoVoiiceClient, MMSTTS, Speaker, TTSError
 
 logging.basicConfig(level=logging.INFO)
@@ -32,9 +31,7 @@ class TurnResponse(BaseModel):
     session_id: str
     transcript: str
     transcript_alternatives: list[str] = []
-    transcript_fr: Optional[str] = None
     reply_ewe: str
-    reply_fr: Optional[str] = None
     staff_summary_fr: str
     urgent: bool
     department: Optional[str] = None
@@ -114,17 +111,15 @@ def create_app(
     speaker: Optional[Speaker] = None,
 ) -> FastAPI:
     if assistant is None:
-        translator = NLLBTranslator() if settings.use_translation else None
-        assistant = Assistant(MuseSparkClient(), translator=translator)
+        assistant = Assistant(MuseSparkClient())
     if recognizer is None:
         recognizer = EweRecognizer()
     if speaker is None:
         speaker = Speaker(EchoVoiiceClient(), MMSTTS() if settings.use_tts_fallback else None)
 
     def preload() -> None:
-        for model in (recognizer, assistant.translator if assistant.use_translation else None):
-            if model is not None and hasattr(model, "load"):
-                model.load()
+        if hasattr(recognizer, "load"):
+            recognizer.load()
         if hasattr(recognizer, "warm_up"):
             recognizer.warm_up()
         if getattr(speaker, "fallback", None) is not None:
@@ -133,7 +128,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if settings.preload_models:
-            logger.info("Preloading speech recognition and translation models")
+            logger.info("Preloading the speech models")
             await asyncio.to_thread(preload)
         yield
 
@@ -172,9 +167,7 @@ def create_app(
             session_id=session.id,
             transcript=transcript,
             transcript_alternatives=alternatives or [],
-            transcript_fr=turn.user_text_fr,
             reply_ewe=turn.reply_ewe,
-            reply_fr=turn.reply_fr,
             staff_summary_fr=turn.staff_summary_fr,
             urgent=turn.urgent,
             department=turn.department,
@@ -188,7 +181,6 @@ def create_app(
             "llm_model": settings.meta_model,
             "llm_key_set": bool(settings.meta_api_key),
             "asr_models": settings.asr_models,
-            "translation": assistant.use_translation,
             "echovoiice_url": settings.echovoiice_url,
             "sessions": len(assistant.sessions),
         }

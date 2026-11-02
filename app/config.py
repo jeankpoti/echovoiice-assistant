@@ -39,16 +39,11 @@ class Settings:
     )
     # Language adapter, used only by multilingual MMS checkpoints such as mms-1b-all
     asr_language: str = field(default_factory=lambda: os.getenv("ASR_LANGUAGE", "ewe"))
-    # Hears English and French for the translator by switching its language adapter.
+    # Hears English and French on the Translate page by switching its language adapter.
     # When it is also one of ASR_MODELS, the same loaded model is shared.
     multilingual_asr_model: str = field(
         default_factory=lambda: os.getenv("MULTILINGUAL_ASR_MODEL", "facebook/mms-1b-all")
     )
-
-    # Translation (Meta NLLB-200). When on, Muse Spark works in French and NLLB
-    # translates Ewe <-> French. When off, Muse Spark reads and writes Ewe directly.
-    use_translation: bool = field(default_factory=lambda: _bool("USE_TRANSLATION", False))
-    nllb_model: str = field(default_factory=lambda: os.getenv("NLLB_MODEL", "facebook/nllb-200-distilled-600M"))
 
     # Text-to-speech: the existing EchoVoiice API, with Meta MMS-TTS as fallback
     echovoiice_url: str = field(default_factory=lambda: os.getenv("ECHOVOIICE_URL", "http://localhost:8000"))

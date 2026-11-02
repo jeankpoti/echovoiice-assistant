@@ -74,11 +74,9 @@ export default function Home() {
       {
         role: "patient",
         ewe: data.transcript,
-        fr: [data.transcript_fr, data.transcript_alternatives?.length ? `Also heard: ${data.transcript_alternatives.join(" / ")}` : ""]
-          .filter(Boolean)
-          .join(" · "),
+        fr: data.transcript_alternatives?.length ? `Also heard: ${data.transcript_alternatives.join(" / ")}` : null,
       },
-      { role: "assistant", ewe: data.reply_ewe, fr: data.reply_fr, audio: data.audio_wav_base64, urgent: data.urgent },
+      { role: "assistant", ewe: data.reply_ewe, audio: data.audio_wav_base64, urgent: data.urgent },
     );
     setStaff({
       summary: data.staff_summary_fr || "Aucun résumé pour le moment.",

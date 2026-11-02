@@ -9,8 +9,7 @@ python-dotenv>=1.0
 numpy>=1.26
 soundfile>=0.12
 
-# Meta models run locally: MMS speech recognition, NLLB translation, MMS-TTS fallback voice
+# Meta models run locally: MMS speech recognition and the MMS-TTS fallback voice
 torch>=2.2
 transformers>=4.44
-sentencepiece>=0.2
 accelerate>=0.33

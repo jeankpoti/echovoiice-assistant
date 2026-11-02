@@ -107,7 +107,7 @@ class EweRecognizer:
         return self._multilingual
 
     def transcribe_in(self, data: bytes, language: str) -> str:
-        """Transcribe English (eng) or French (fra) speech for the translator."""
+        """Transcribe English (eng) or French (fra) speech for the Translate page."""
         audio = load_audio(data)
         if len(audio) < SAMPLE_RATE // 4:
             return ""

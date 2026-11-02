@@ -41,14 +41,6 @@ class FakeRecognizer:
         return {"eng": "where is the market", "fra": "où est le marché"}[language]
 
 
-class FakeTranslator:
-    def ewe_to_french(self, text):
-        return f"FR({text})"
-
-    def french_to_ewe(self, text):
-        return f"EE({text})"
-
-
 class FakeSpeaker:
     async def speak(self, text):
         return WAV, "fake"
@@ -60,8 +52,8 @@ def reply(text, summary="Le patient a mal à la tête.", urgent=False, departmen
     )
 
 
-def make_client(llm, translator=None, use_translation=False):
-    assistant = Assistant(llm, translator=translator, use_translation=use_translation)
+def make_client(llm):
+    assistant = Assistant(llm)
     app = create_app(assistant=assistant, recognizer=FakeRecognizer(), speaker=FakeSpeaker())
     return TestClient(app)
 
@@ -133,17 +125,6 @@ def test_urgent_flag_stays_on():
     client.post("/v1/converse/text", json={"session_id": session_id, "text": "Ʋu le dodom"})
     second = client.post("/v1/converse/text", json={"session_id": session_id, "text": "Ɛ̃"}).json()
     assert second["urgent"] is True
-
-
-def test_translation_route_wraps_model_in_nllb():
-    llm = FakeLLM([reply("Allez à l'accueil.")])
-    client = make_client(llm, translator=FakeTranslator(), use_translation=True)
-    session_id = client.post("/v1/sessions").json()["session_id"]
-    data = client.post("/v1/converse/text", json={"session_id": session_id, "text": "Afi kae?"}).json()
-    assert llm.calls[0][-1]["content"] == "FR(Afi kae?)"
-    assert data["reply_fr"] == "Allez à l'accueil."
-    assert data["reply_ewe"] == "EE(Allez à l'accueil.)"
-    assert "simple French" in llm.calls[0][0]["content"]
 
 
 def test_unknown_session_is_404():
@@ -318,7 +299,7 @@ def test_everyday_ewe_style_guide_is_in_every_mode():
     from app.conversation import build_system_prompt
 
     for mode in ("general", "hospital"):
-        prompt = build_system_prompt(False, mode)
+        prompt = build_system_prompt(mode)
         assert "How your Ewe should sound" in prompt
         assert "Add real examples below" not in prompt  # the editing note stays out
 
