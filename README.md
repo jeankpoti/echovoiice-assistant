@@ -12,18 +12,32 @@ Built for the Meta Global AI Developer Hackathon (Oct 26 to Nov 4, 2026), theme 
 
 ```
 Someone speaks Ewe
-  -> Meta MMS, two models in parallel             speech to Ewe text
-       (everyday Ewe + formal/Bible-style Ewe)
+  -> Meta MMS, fine-tuned on everyday Ewe          speech to Ewe text
   -> Muse Spark (Meta Model API)                   understands, answers or translates, in Ewe
   -> EchoVoiice TTS (Meta MMS-TTS as fallback)     Ewe text to speech
 They hear the reply in Ewe
 ```
 
-All language work goes through the Muse Spark API: it reads and writes Ewe directly, so there is no separate translation model to download or run. Only speech recognition and the fallback voice run locally.
+Muse Spark, through the Meta Model API, does all the language work: conversation, translation, word lessons and, on the Translate page, deciding which language was spoken. It reads and writes Ewe directly, so there is no separate translation model. English and French speech is transcribed by Muse Voice Transcribe on the same API. Only Ewe speech recognition and the fallback voice run locally.
 
-Ewe is spoken in different ways: everyday Ewe, often mixed with French, and a more formal Ewe like the Bible's. One speech model rarely handles both, so the app runs two Meta MMS models on every Ewe recording. [`waxal-benchmarking/mms-300m-waxal-ewe`](https://huggingface.co/waxal-benchmarking/mms-300m-waxal-ewe) is MMS fine-tuned on everyday conversational Ewe (licence CC BY-NC 4.0). `facebook/mms-1b-all` with its Ewe adapter was trained mostly on Bible readings. Muse Spark sees both versions and works out what the person meant. Change the list with `ASR_MODELS`.
+### Hearing everyday Ewe
 
-For the Translate page, `facebook/mms-1b-all` also hears English and French by switching to its English or French adapter. When it is already loaded for Ewe the same copy is shared, so this needs no extra memory. English and French replies are spoken by the browser's own voices.
+Ewe speech is transcribed by [`waxal-benchmarking/mms-300m-waxal-ewe`](https://huggingface.co/waxal-benchmarking/mms-300m-waxal-ewe), Meta MMS fine-tuned on everyday conversational Ewe from Google's WAXAL corpus (model licence CC BY-NC 4.0).
+
+We chose it by measuring. On 30 real conversational recordings from the WAXAL Ewe test set (about 10 minutes of speech), the share of words each setup got wrong was:
+
+| Setup | Word error rate | Character error rate |
+| --- | --- | --- |
+| **`mms-300m-waxal-ewe` alone (used)** | **33.6%** | **13.5%** |
+| Muse Spark combining it with `facebook/mms-1b-all` (the previous setup) | 39.8% | 16.6% |
+| Same, but told to trust the everyday model first | 32.9% | 13.4% |
+| `facebook/mms-1b-all` alone (trained mostly on Bible readings) | 48.3% | 16.9% |
+| Muse Spark 1.2 hearing the audio, with the MMS versions as hints | 36.7% | 14.9% |
+| Muse Spark 1.2 hearing the audio alone | 78.8% | 37.6% |
+
+Adding `facebook/mms-1b-all` barely helps at best, while costing about 1.5 seconds per turn and 4 GB of memory, so the everyday model runs alone. Muse Spark still reads every transcript knowing it may contain recognition errors, and works out what the person meant. To add models, list them in `ASR_MODELS`.
+
+English and French speech (Translate page) is transcribed by Muse Voice Transcribe, and English and French replies are spoken by the browser's own voices.
 
 ## Talk
 
@@ -43,7 +57,15 @@ You can also type in Ewe.
 
 Choose English or Français at the top; Ewe is always the other side. The pairs are Ewe ⇄ English and Ewe ⇄ French; English ⇄ French is not offered.
 
-Each person has a side with a microphone and a text box. With **Start live interpreting** the app listens hands-free: the highlighted side speaks, the translation is spoken to the other person, and then the turn passes to them. Tap a side to give it the turn. The microphone stays off while a translation plays, so the app does not translate its own voice. Without live mode, tap your side's microphone to talk and tap again to stop.
+With **Start live interpreting** the app listens hands-free and either person just talks: it works out whether they spoke Ewe or the other language and speaks the translation to the other person. To do that, the Ewe recognizer and Muse Voice Transcribe both hear each recording, and Muse Spark decides which version is real speech, then translates it. If it guesses wrong, set **Who speaks** to one language. The microphone stays off while a translation plays, so the app does not translate its own voice.
+
+Each translation can be fixed:
+
+- **Say again** removes it so the person can repeat themselves (in live mode, the app then listens for that language).
+- **Wrong language** translates the same recording again as the other language, without speaking again.
+- **Edit** puts the text in the box to correct it, then Go translates it again.
+
+Without live mode, tap the microphone of the language you speak, and tap again to stop. Each language also has a text box.
 
 ## Learn
 
@@ -54,8 +76,8 @@ Type a word or short phrase in English, French or Ewe (for an Ewe word, choose w
 Everything in this repository was written during the hackathon:
 
 - the conversation loop and session memory (`app/conversation.py`) and the prompts (`app/prompts/`)
-- speech recognition with Meta MMS: two Ewe models merged by Muse Spark, plus English and French adapters (`app/asr.py`)
-- translation and word lessons with Muse Spark (`app/language.py`)
+- Ewe speech recognition with Meta MMS (`app/asr.py`), chosen by measuring on real everyday Ewe, and English and French with Muse Voice Transcribe (`app/transcribe.py`)
+- translation, spoken-language detection and word lessons with Muse Spark (`app/language.py`)
 - the Muse Spark client (`app/llm.py`)
 - the API (`app/main.py`) and the mobile web frontend in Next.js (`web/`)
 
@@ -82,13 +104,13 @@ This starts three services:
 | `assistant` | 8080 | The API (this repository); interactive docs at http://localhost:8080/docs |
 | `echovoiice` | inside Docker only | The pre-existing EchoVoiice TTS API, built unmodified straight from [its GitHub repository](https://github.com/jeankpoti/echoVoiice), so there is nothing else to clone. The assistant creates its own EchoVoiice account and API key on first use |
 
-The first start downloads the Meta speech models (about 4 GB) and takes several minutes. They are kept in a Docker volume, so later starts are quick. Give Docker at least 8 GB of memory.
+The first start downloads the Meta speech models (about 1.5 GB) and takes a few minutes. They are kept in a Docker volume, so later starts are quick. Give Docker at least 4 GB of memory.
 
 On Apple Silicon Macs, EchoVoiice may crash while generating speech (a PyTorch segmentation fault on ARM). The app then uses the MMS-TTS voice and skips EchoVoiice for `ECHOVOIICE_RETRY_SECONDS`; on x86 servers EchoVoiice is used normally.
 
 ## Run it without Docker
 
-You need Python 3.10 or newer and Node.js 20 or newer. The Meta speech models download from Hugging Face on first use (about 4 GB).
+You need Python 3.10 or newer and Node.js 20 or newer. The Meta speech models download from Hugging Face on first use (about 1.5 GB).
 
 ```bash
 python3 -m venv .venv
@@ -120,9 +142,9 @@ Settings come from environment variables or `.env` (see [`.env.example`](.env.ex
 | `META_API_BASE` | `https://api.meta.ai/v1` | Meta Model API address |
 | `META_MODEL` | `muse-spark-1.3` | Model used for conversation, translation and lessons |
 | `META_REASONING_EFFORT` | `minimal` | `minimal` answers about twice as fast as `low` |
-| `ASR_MODELS` | `waxal-benchmarking/mms-300m-waxal-ewe,facebook/mms-1b-all` | Ewe speech models, comma-separated; all run on every recording |
-| `ASR_LANGUAGE` | `ewe` | Language adapter for multilingual MMS models |
-| `MULTILINGUAL_ASR_MODEL` | `facebook/mms-1b-all` | Hears English and French on the Translate page |
+| `ASR_MODELS` | `waxal-benchmarking/mms-300m-waxal-ewe` | Ewe speech models, comma-separated; all run on every recording |
+| `ASR_LANGUAGE` | `ewe` | Language adapter for multilingual MMS models such as `facebook/mms-1b-all` |
+| `VOICE_TRANSCRIBE_MODEL` | `muse-voice-transcribe-1.0` | Transcribes English and French on the Translate page |
 | `ECHOVOIICE_URL` | `http://localhost:8000` | EchoVoiice TTS API |
 | `ECHOVOIICE_API_KEY` | | EchoVoiice key; or leave empty and set the two account variables below |
 | `ECHOVOIICE_ACCOUNT_EMAIL`, `ECHOVOIICE_ACCOUNT_PASSWORD` | | Account the assistant signs in with (and creates) to get its own key |
@@ -144,7 +166,7 @@ Settings come from environment variables or `.env` (see [`.env.example`](.env.ex
 | `POST /v1/converse/text` | JSON `{"session_id", "text"}`; the same with typed Ewe |
 | `GET /v1/sessions/{id}/summary` | French summary for staff, urgent flag, department |
 | `POST /v1/translate` | JSON `text`, `source`, `target` (one of them `ewe`, the other `eng` or `fra`). Returns the translation, with Ewe audio when translating into Ewe |
-| `POST /v1/translate/audio` | Form fields `source`, `target` and `audio` (WAV). Same, starting from speech |
+| `POST /v1/translate/audio` | Form fields `other` (`eng` or `fra`), `audio` (WAV) and optional `source` (`auto`, the default, or `ewe`/`eng`/`fra`). With `auto`, works out which language was spoken. Returns the detected `source` and `target` with the translation |
 | `POST /v1/learn` | JSON `text`, `source` (`eng`, `fra` or `ewe`) and, for Ewe words, `other` (`eng` or `fra`). Returns the Ewe, its meaning, pronunciation, an example and audio |
 | `GET /health` | Configuration status |
 

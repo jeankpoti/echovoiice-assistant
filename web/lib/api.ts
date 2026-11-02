@@ -68,10 +68,12 @@ export const translateText = (text: string, source: Lang, target: Lang) =>
     body: JSON.stringify({ text, source, target }),
   });
 
-export function translateAudio(wav: Blob, source: Lang, target: Lang) {
+// `other` is the conversation's non-Ewe language. With source "auto" the server works out
+// whether Ewe or `other` was spoken, and translates the other way.
+export function translateAudio(wav: Blob, other: OtherLang, source: Lang | "auto" = "auto") {
   const form = new FormData();
+  form.append("other", other);
   form.append("source", source);
-  form.append("target", target);
   form.append("audio", wav, "speech.wav");
   return api<TranslateResponse>("/v1/translate/audio", { method: "POST", body: form });
 }

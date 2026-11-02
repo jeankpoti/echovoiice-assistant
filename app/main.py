@@ -14,6 +14,7 @@ from .config import settings
 from . import language
 from .conversation import GREETING_EWE, GREETING_FR, Assistant, Turn
 from .llm import LLMError, MuseSparkClient
+from .transcribe import MuseVoiceTranscriber
 from .tts import EchoVoiiceClient, MMSTTS, Speaker, TTSError
 
 logging.basicConfig(level=logging.INFO)
@@ -109,6 +110,7 @@ def create_app(
     assistant: Optional[Assistant] = None,
     recognizer=None,
     speaker: Optional[Speaker] = None,
+    transcriber=None,
 ) -> FastAPI:
     if assistant is None:
         assistant = Assistant(MuseSparkClient())
@@ -116,6 +118,8 @@ def create_app(
         recognizer = EweRecognizer()
     if speaker is None:
         speaker = Speaker(EchoVoiiceClient(), MMSTTS() if settings.use_tts_fallback else None)
+    if transcriber is None:
+        transcriber = MuseVoiceTranscriber()
 
     def preload() -> None:
         if hasattr(recognizer, "load"):
@@ -196,20 +200,30 @@ def create_app(
             **(await speak(GREETING_EWE)),
         )
 
-    async def hear(audio: UploadFile, lang: str = "ewe") -> list[str]:
-        """Transcribe an upload. Ewe may come back in several versions, one per speech model."""
+    async def read_upload(audio: UploadFile) -> bytes:
         data = await audio.read()
         if not data:
             raise HTTPException(status_code=400, detail="Empty audio upload.")
         if len(data) > MAX_AUDIO_BYTES:
             raise HTTPException(status_code=413, detail="Audio is larger than 10 MB.")
+        return data
+
+    async def transcribe(data: bytes, lang: str) -> list[str]:
+        """Ewe goes through the local MMS models (one version per model); English and
+        French through Muse Voice Transcribe."""
+        if lang == "ewe":
+            return await asyncio.to_thread(recognizer.transcribe_all, data)
+        text = await transcriber.transcribe(data, lang)
+        return [text] if text else []
+
+    async def hear(audio: UploadFile, lang: str = "ewe") -> list[str]:
+        """Transcribe an upload in one known language."""
+        data = await read_upload(audio)
         started = time.perf_counter()
         try:
-            if lang == "ewe":
-                transcripts = await asyncio.to_thread(recognizer.transcribe_all, data)
-            else:
-                text = await asyncio.to_thread(recognizer.transcribe_in, data, lang)
-                transcripts = [text] if text else []
+            transcripts = await transcribe(data, lang)
+        except LLMError as e:
+            raise HTTPException(status_code=502, detail=str(e)) from e
         except Exception as e:
             logger.exception("Speech recognition failed")
             raise HTTPException(status_code=400, detail=f"Could not read the audio: {e}") from e
@@ -250,14 +264,42 @@ def create_app(
 
     @app.post("/v1/translate/audio", response_model=TranslateResponse)
     async def translate_audio(
-        source: Language = Form(...), target: Language = Form(...), audio: UploadFile = File(...)
+        other: Literal["eng", "fra"] = Form(...),
+        source: Literal["auto", "ewe", "eng", "fra"] = Form("auto"),
+        audio: UploadFile = File(...),
     ):
+        """`other` is the non-Ewe language of the conversation. With source "auto", the
+        speaker may use either language: both recognizers listen and Muse Spark decides."""
+        if source not in ("auto", "ewe", other):
+            raise HTTPException(status_code=422, detail="Translation goes between Ewe and the chosen language.")
+        if source != "auto":
+            transcripts = await hear(audio, source)
+            target = other if source == "ewe" else "ewe"
+            return await run_translation(transcripts[0], source, target, transcripts[1:])
+
+        data = await read_upload(audio)
+        started = time.perf_counter()
+        ewe, heard_other = await asyncio.gather(transcribe(data, "ewe"), transcribe(data, other), return_exceptions=True)
+        for result in (ewe, heard_other):
+            if isinstance(result, Exception):
+                logger.warning("One recognizer failed during language detection: %s", result)
+        ewe = [] if isinstance(ewe, Exception) else ewe
+        heard_other = "" if isinstance(heard_other, Exception) or not heard_other else heard_other[0]
+        logger.info("Heard (auto): ewe=%s | %s=%s (asr=%.1fs)", " | ".join(ewe), other, heard_other,
+                    time.perf_counter() - started)
+        if not ewe and not heard_other:
+            raise HTTPException(status_code=422, detail="No speech was recognized. Please try again.")
+        if not heard_other:
+            return await run_translation(ewe[0], "ewe", other, ewe[1:])
+        if not ewe:
+            return await run_translation(heard_other, other, "ewe")
+
         try:
-            language.check_pair(source, target)
-        except ValueError as e:
-            raise HTTPException(status_code=422, detail=str(e)) from e
-        transcripts = await hear(audio, source)
-        return await run_translation(transcripts[0], source, target, transcripts[1:])
+            result = await language.detect_and_translate(assistant.llm, ewe, heard_other, other)
+        except LLMError as e:
+            raise HTTPException(status_code=502, detail=str(e)) from e
+        voice = await speak(result["translation"]) if result["target"] == "ewe" else {}
+        return TranslateResponse(**result, **voice)
 
     @app.post("/v1/learn", response_model=LearnResponse)
     async def learn(request: LearnRequest):

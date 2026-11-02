@@ -25,24 +25,23 @@ class Settings:
     meta_model: str = field(default_factory=lambda: os.getenv("META_MODEL", "muse-spark-1.3"))
     meta_reasoning_effort: str = field(default_factory=lambda: os.getenv("META_REASONING_EFFORT", "minimal"))
 
-    # Speech recognition (Meta MMS)
-    # Comma-separated. Each model transcribes the audio and Muse Spark sees every version:
-    # - waxal-benchmarking/mms-300m-waxal-ewe: Meta MMS fine-tuned on everyday conversational Ewe
-    #   (WAXAL corpus; model licence CC BY-NC 4.0, fine for a non-commercial demo)
-    # - facebook/mms-1b-all: Meta MMS with its Ewe adapter, trained mostly on Bible readings
+    # Ewe speech recognition (Meta MMS), comma-separated; every model hears each recording.
+    # waxal-benchmarking/mms-300m-waxal-ewe is MMS fine-tuned on everyday conversational Ewe
+    # (WAXAL corpus; model licence CC BY-NC 4.0, fine for a non-commercial demo). On WAXAL test
+    # recordings it got 34% of words wrong alone, against 40% when combined with facebook/mms-1b-all
+    # (trained mostly on Bible readings), so it runs alone by default.
     asr_models: list = field(
         default_factory=lambda: [
             m.strip()
-            for m in os.getenv("ASR_MODELS", "waxal-benchmarking/mms-300m-waxal-ewe,facebook/mms-1b-all").split(",")
+            for m in os.getenv("ASR_MODELS", "waxal-benchmarking/mms-300m-waxal-ewe").split(",")
             if m.strip()
         ]
     )
     # Language adapter, used only by multilingual MMS checkpoints such as mms-1b-all
     asr_language: str = field(default_factory=lambda: os.getenv("ASR_LANGUAGE", "ewe"))
-    # Hears English and French on the Translate page by switching its language adapter.
-    # When it is also one of ASR_MODELS, the same loaded model is shared.
-    multilingual_asr_model: str = field(
-        default_factory=lambda: os.getenv("MULTILINGUAL_ASR_MODEL", "facebook/mms-1b-all")
+    # English and French speech on the Translate page: Muse Voice Transcribe on the Meta Model API
+    voice_transcribe_model: str = field(
+        default_factory=lambda: os.getenv("VOICE_TRANSCRIBE_MODEL", "muse-voice-transcribe-1.0")
     )
 
     # Text-to-speech: the existing EchoVoiice API, with Meta MMS-TTS as fallback

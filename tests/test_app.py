@@ -37,8 +37,17 @@ class FakeRecognizer:
     def transcribe_all(self, data):
         return ["Ta le veve nam", "Ta le vevem nam"]
 
-    def transcribe_in(self, data, language):
-        return {"eng": "where is the market", "fra": "où est le marché"}[language]
+
+class FakeTranscriber:
+    """Muse Voice Transcribe stand-in; `heard` is what it returns for English and French."""
+
+    def __init__(self, heard=None):
+        self.heard = heard if heard is not None else {"eng": "Where is the market?", "fra": "Où est le marché ?"}
+        self.calls = []
+
+    async def transcribe(self, data, language):
+        self.calls.append(language)
+        return self.heard[language]
 
 
 class FakeSpeaker:
@@ -52,9 +61,12 @@ def reply(text, summary="Le patient a mal à la tête.", urgent=False, departmen
     )
 
 
-def make_client(llm):
+def make_client(llm, transcriber=None):
     assistant = Assistant(llm)
-    app = create_app(assistant=assistant, recognizer=FakeRecognizer(), speaker=FakeSpeaker())
+    app = create_app(
+        assistant=assistant, recognizer=FakeRecognizer(), speaker=FakeSpeaker(),
+        transcriber=transcriber or FakeTranscriber(),
+    )
     return TestClient(app)
 
 
@@ -329,21 +341,75 @@ def test_translate_refuses_english_french_and_same_language():
         assert response.status_code == 422
 
 
-def test_translate_audio_hears_each_language():
-    llm = FakeLLM(["Afi ka asie le?", "Where is the market?"])
-    client = make_client(llm)
-    french = client.post(
-        "/v1/translate/audio", data={"source": "fra", "target": "ewe"},
-        files={"audio": ("a.wav", wav_bytes(), "audio/wav")},
-    ).json()
-    assert french["text"] == "où est le marché"
-    ewe = client.post(
-        "/v1/translate/audio", data={"source": "ewe", "target": "eng"},
-        files={"audio": ("a.wav", wav_bytes(), "audio/wav")},
-    ).json()
-    assert ewe["text"] == "Ta le veve nam"
+def post_audio(client, **fields):
+    return client.post("/v1/translate/audio", data=fields, files={"audio": ("a.wav", wav_bytes(), "audio/wav")})
+
+
+def test_translate_audio_with_a_fixed_language():
+    llm = FakeLLM(["Afi ka asie le?", "My head hurts"])
+    transcriber = FakeTranscriber()
+    client = make_client(llm, transcriber)
+    french = post_audio(client, other="fra", source="fra").json()
+    assert french["text"] == "Où est le marché ?"  # heard by Muse Voice Transcribe
+    assert french["source"] == "fra" and french["target"] == "ewe"
+    ewe = post_audio(client, other="eng", source="ewe").json()
+    assert ewe["text"] == "Ta le veve nam"  # heard by the Ewe models
+    assert ewe["target"] == "eng"
     assert ewe["text_alternatives"] == ["Ta le vevem nam"]
     assert "Ta le vevem nam" in llm.calls[1][-1]["content"]  # every version reaches the model
+    assert transcriber.calls == ["fra"]
+
+
+def test_translate_audio_detects_ewe_automatically():
+    detected = {"spoken": "ewe", "text": "Ta le veve nam", "translation": "J'ai mal à la tête"}
+    llm = FakeLLM([json.dumps(detected)])
+    client = make_client(llm, FakeTranscriber({"fra": "ta lé vévé nam"}))
+    data = post_audio(client, other="fra").json()  # source defaults to auto
+    assert data["source"] == "ewe" and data["target"] == "fra"
+    assert data["translation"] == "J'ai mal à la tête"
+    assert data["audio_wav_base64"] is None  # French is spoken by the browser
+    sent = llm.calls[0][-1]["content"]
+    assert "Ta le veve nam" in sent and "ta lé vévé nam" in sent  # Muse Spark sees both recognizers
+
+
+def test_translate_audio_detects_french_automatically_and_speaks_ewe():
+    detected = {"spoken": "fra", "text": "Où est le marché ?", "translation": "Afi ka asie le?"}
+    client = make_client(FakeLLM([json.dumps(detected)]))
+    data = post_audio(client, other="fra").json()
+    assert data["source"] == "fra" and data["target"] == "ewe"
+    assert base64.b64decode(data["audio_wav_base64"]) == WAV
+
+
+def test_translate_audio_skips_detection_when_only_ewe_was_heard():
+    llm = FakeLLM(["Where is the market?"])
+    client = make_client(llm, FakeTranscriber({"eng": ""}))
+    data = post_audio(client, other="eng").json()
+    assert data["source"] == "ewe" and data["translation"] == "Where is the market?"
+    assert "Translate the message from Ewe" in llm.calls[0][0]["content"]
+
+
+def test_translate_audio_rejects_a_language_outside_the_pair():
+    client = make_client(FakeLLM([]))
+    assert post_audio(client, other="eng", source="fra").status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_muse_voice_transcribe_request_shape():
+    from app.transcribe import MuseVoiceTranscriber
+
+    seen = {}
+
+    def handler(request: httpx.Request):
+        seen["url"] = str(request.url)
+        seen["body"] = request.content
+        return httpx.Response(200, json={"transcript": "Bonjour", "turns": []})
+
+    transcriber = MuseVoiceTranscriber(api_key="k", base_url="https://api.meta.ai/v1",
+                                       transport=httpx.MockTransport(handler))
+    assert await transcriber.transcribe(wav_bytes(), "fra") == "Bonjour"
+    assert seen["url"] == "https://api.meta.ai/v1/asr/transcribe"
+    assert b'"languageBias": ["French"]' in seen["body"]
+    assert b"muse-voice-transcribe-1.0" in seen["body"]
 
 
 def test_learn_word_gives_ewe_with_audio():

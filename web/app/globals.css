@@ -197,3 +197,14 @@ button { font: inherit; cursor: pointer; }
   border: 0; background: none; color: var(--brand); padding: 0 4px;
   font-size: 15px; font-weight: 700; vertical-align: baseline;
 }
+
+/* --- Translate: fixing a translation, who speaks --- */
+.entry-actions { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; }
+.entry-actions button {
+  border: 0; background: none; padding: 2px 0; color: var(--brand);
+  font-size: 13px; font-weight: 600;
+}
+.entry-actions button:disabled { opacity: .4; }
+.who { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.sides { width: 100%; display: flex; flex-direction: column; gap: 8px; }
+.sides .label { text-align: center; }

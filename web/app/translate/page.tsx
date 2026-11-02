@@ -1,51 +1,54 @@
 "use client";
 
 // Face-to-face interpreter: one person speaks Ewe, the other English or French.
-// Live mode listens hands-free and hands the turn to the other person after each translation.
+// Live mode listens hands-free and works out which language each person spoke.
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { Lang, OtherLang, TranslateResponse, translateAudio, translateText } from "@/lib/api";
 import { play, speakText, stopPlayback, toWav16k } from "@/lib/audio";
 import { ListenState, LiveListener } from "@/lib/live";
 
 type Side = "ewe" | "other";
+type Speaker = "auto" | Side;
 
 interface Entry {
   id: number;
-  side: Side;
   source: Lang;
   target: Lang;
   text: string;
   translation: string;
   audio?: string | null;
+  wav?: Blob; // kept so a wrong language guess can be redone without speaking again
 }
 
 const NAMES: Record<Lang, string> = { ewe: "Eʋegbe", eng: "English", fra: "Français" };
-const PROMPTS: Record<Lang, string> = {
-  ewe: "Ƒo nu le Eʋegbe me",
-  eng: "Speak English",
-  fra: "Parlez français",
+const PLACEHOLDERS: Record<Lang, string> = {
+  ewe: "Ŋlɔ le Eʋegbe me…",
+  eng: "Type in English…",
+  fra: "Écrivez en français…",
 };
 const OTHER_KEY = "echovoiice.translate.other";
 
 export default function TranslatePage() {
   const [other, setOther] = useState<OtherLang>("fra");
+  const [speaker, setSpeaker] = useState<Speaker>("auto");
   const [entries, setEntries] = useState<Entry[]>([]);
   const [status, setStatus] = useState("");
   const [thinking, setThinking] = useState(false);
   const [talking, setTalking] = useState(false);
   const [liveOn, setLiveOn] = useState(false);
   const [heard, setHeard] = useState<ListenState>("listening");
-  const [active, setActive] = useState<Side>("ewe");
   const [recordingSide, setRecordingSide] = useState<Side | null>(null);
   const [texts, setTexts] = useState<Record<Side, string>>({ ewe: "", other: "" });
+  const [editing, setEditing] = useState<{ id: number; side: Side } | null>(null);
 
   const live = useRef<LiveListener | null>(null);
-  const activeRef = useRef<Side>("ewe");
   const otherRef = useRef<OtherLang>("fra");
+  const speakerRef = useRef<Speaker>("auto");
   const recorder = useRef<MediaRecorder | null>(null);
   const nextId = useRef(0);
   const listRef = useRef<HTMLElement>(null);
-  const micRef = useRef<HTMLButtonElement>(null);
+  const liveRef = useRef<HTMLButtonElement>(null);
+  const inputs = useRef<Record<Side, HTMLInputElement | null>>({ ewe: null, other: null });
 
   useEffect(() => {
     try {
@@ -61,7 +64,7 @@ export default function TranslatePage() {
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
-  }, [entries]);
+  }, [entries.length]);
 
   function chooseOther(lang: OtherLang) {
     otherRef.current = lang;
@@ -69,12 +72,15 @@ export default function TranslatePage() {
     try { localStorage.setItem(OTHER_KEY, lang); } catch {}
   }
 
-  function chooseActive(side: Side) {
-    activeRef.current = side;
-    setActive(side);
+  function chooseSpeaker(next: Speaker) {
+    speakerRef.current = next;
+    setSpeaker(next);
   }
 
   const langOf = (side: Side): Lang => (side === "ewe" ? "ewe" : otherRef.current);
+  const sideOf = (lang: Lang): Side => (lang === "ewe" ? "ewe" : "other");
+  const speakerSource = (): Lang | "auto" =>
+    speakerRef.current === "auto" ? "auto" : langOf(speakerRef.current);
 
   async function say(entry: Entry) {
     setTalking(true);
@@ -83,10 +89,8 @@ export default function TranslatePage() {
     setTalking(false);
   }
 
-  // Translate what one side said, speak it to the other side, then hand them the turn.
-  async function run(side: Side, send: (source: Lang, target: Lang) => Promise<TranslateResponse>) {
-    const source = langOf(side);
-    const target = side === "ewe" ? otherRef.current : "ewe";
+  // Translate, show it (in place of `replaceId` when redoing one), then speak it.
+  async function run(send: () => Promise<TranslateResponse>, extra: { wav?: Blob; replaceId?: number } = {}) {
     const listener = live.current;
     // The microphone stays off while translating and speaking, so the translation is not heard as input
     listener?.pause();
@@ -94,15 +98,17 @@ export default function TranslatePage() {
     setThinking(true);
     setStatus("");
     try {
-      const data = await send(source, target);
+      const data = await send();
       const entry: Entry = {
-        id: nextId.current++, side, source, target,
-        text: data.text, translation: data.translation, audio: data.audio_wav_base64,
+        id: extra.replaceId ?? nextId.current++,
+        source: data.source, target: data.target,
+        text: data.text, translation: data.translation, audio: data.audio_wav_base64, wav: extra.wav,
       };
-      setEntries((prev) => [...prev, entry]);
+      setEntries((prev) =>
+        extra.replaceId === undefined ? [...prev, entry] : prev.map((e) => (e.id === extra.replaceId ? entry : e)),
+      );
       setThinking(false);
       if (data.tts_error) setStatus("Translation ready (voice unavailable)");
-      chooseActive(side === "ewe" ? "other" : "ewe");
       await say(entry);
     } catch (e) {
       setStatus((e as Error).message);
@@ -112,15 +118,40 @@ export default function TranslatePage() {
     }
   }
 
-  // --- Live: hands-free, the highlighted side speaks next ---
+  // --- Fixing a translation ---
+  function sayAgain(entry: Entry) {
+    stopPlayback();
+    setEntries((prev) => prev.filter((e) => e.id !== entry.id));
+    if (liveOn) {
+      chooseSpeaker(sideOf(entry.source));
+      setStatus(`Say it again in ${NAMES[entry.source]}`);
+    } else {
+      setStatus(`Tap the ${NAMES[entry.source]} microphone and say it again`);
+    }
+  }
+
+  function wrongLanguage(entry: Entry) {
+    if (!entry.wav || thinking) return;
+    const source = entry.source === "ewe" ? otherRef.current : "ewe";
+    run(() => translateAudio(entry.wav!, otherRef.current, source), { wav: entry.wav, replaceId: entry.id });
+  }
+
+  function edit(entry: Entry) {
+    const side = sideOf(entry.source);
+    setEditing({ id: entry.id, side });
+    setTexts((prev) => ({ ...prev, [side]: entry.text }));
+    inputs.current[side]?.focus();
+  }
+
+  // --- Live: hands-free ---
   async function startLive() {
     const listener = new LiveListener({
-      onUtterance: (wav) => run(activeRef.current, (s, t) => translateAudio(wav, s, t)),
+      onUtterance: (wav) => run(() => translateAudio(wav, otherRef.current, speakerSource()), { wav }),
       onState: (s) => {
         setHeard(s);
         if (s === "hearing") setStatus("");
       },
-      onLevel: (rms) => micRef.current?.style.setProperty("--level", String(Math.min(1, rms * 10))),
+      onLevel: (rms) => liveRef.current?.style.setProperty("--level", String(Math.min(1, rms * 10))),
     });
     await listener.start();
     live.current = listener;
@@ -131,7 +162,7 @@ export default function TranslatePage() {
   function stopLive() {
     live.current?.stop();
     live.current = null;
-    micRef.current?.style.setProperty("--level", "0");
+    liveRef.current?.style.setProperty("--level", "0");
     setLiveOn(false);
     stopPlayback();
   }
@@ -142,9 +173,10 @@ export default function TranslatePage() {
     const rec = new MediaRecorder(stream);
     const chunks: Blob[] = [];
     rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
-    rec.onstop = () => {
+    rec.onstop = async () => {
       stream.getTracks().forEach((t) => t.stop());
-      run(side, async (s, t) => translateAudio(await toWav16k(new Blob(chunks, { type: rec.mimeType })), s, t));
+      const wav = await toWav16k(new Blob(chunks, { type: rec.mimeType }));
+      run(() => translateAudio(wav, otherRef.current, langOf(side)), { wav });
     };
     stopPlayback();
     rec.start();
@@ -161,7 +193,7 @@ export default function TranslatePage() {
   async function onSideMic(side: Side) {
     try {
       if (liveOn) {
-        chooseActive(side); // in live mode, tapping a side just gives it the turn
+        chooseSpeaker(speaker === side ? "auto" : side); // in live mode the side mic picks who speaks
         return;
       }
       if (thinking) return;
@@ -191,14 +223,19 @@ export default function TranslatePage() {
     e.preventDefault();
     const value = texts[side].trim();
     if (!value || thinking) return;
+    const replaceId = editing?.side === side ? editing.id : undefined;
     setTexts((prev) => ({ ...prev, [side]: "" }));
-    await run(side, (s, t) => translateText(value, s, t));
+    setEditing(null);
+    const source = langOf(side);
+    const target = side === "ewe" ? otherRef.current : "ewe";
+    await run(() => translateText(value, source, target), { replaceId });
   }
 
   function changeOther(lang: OtherLang) {
     if (lang === other) return;
     chooseOther(lang);
     setEntries([]);
+    setEditing(null);
     setStatus("");
   }
 
@@ -207,26 +244,27 @@ export default function TranslatePage() {
     if (thinking) shownStatus = "Translating…";
     else if (talking) shownStatus = "Speaking the translation…";
     else if (recordingSide) shownStatus = `Listening to ${NAMES[langOf(recordingSide)]}… tap again when done`;
-    else if (liveOn && heard === "hearing") shownStatus = `Hearing ${NAMES[langOf(active)]}…`;
-    else if (liveOn) shownStatus = `${PROMPTS[langOf(active)]} · tap the other side to switch`;
-    else shownStatus = "Start live interpreting, or tap a side to talk";
+    else if (liveOn && heard === "hearing") shownStatus = "I'm listening…";
+    else if (liveOn && speaker === "auto") shownStatus = `Speak Eʋegbe or ${NAMES[other]}, I'll work out which`;
+    else if (liveOn) shownStatus = `Listening for ${NAMES[langOf(speaker as Side)]}`;
+    else shownStatus = "Start live interpreting, or tap a microphone to talk";
   }
 
   function sidePanel(side: Side) {
     const lang = langOf(side);
-    const isActive = liveOn && active === side;
     const recording = recordingSide === side;
+    const chosen = liveOn && speaker === side;
     return (
-      <div className={`side${isActive ? " active" : ""}`}>
+      <div className={`side${chosen ? " active" : ""}`}>
         <div className="side-head">
           <strong>{NAMES[lang]}</strong>
-          {isActive && <span className="turn">● {PROMPTS[lang]}</span>}
+          {chosen && <span className="turn">● listening for this language</span>}
         </div>
         <div className="side-row">
           <button
             className={`side-mic${recording ? " recording" : ""}`}
-            aria-label={liveOn ? `${NAMES[lang]} speaks next` : recording ? "Stop" : `Talk in ${NAMES[lang]}`}
-            aria-pressed={liveOn ? isActive : recording}
+            aria-label={liveOn ? `Only listen for ${NAMES[lang]}` : recording ? "Stop" : `Talk in ${NAMES[lang]}`}
+            aria-pressed={liveOn ? chosen : recording}
             disabled={!liveOn && thinking && !recording}
             onClick={() => onSideMic(side)}
           >
@@ -236,8 +274,9 @@ export default function TranslatePage() {
           </button>
           <form className="text-form" onSubmit={(e) => onSubmit(e, side)}>
             <input
+              ref={(el) => { inputs.current[side] = el; }}
               type="text"
-              placeholder={side === "ewe" ? "Ŋlɔ le Eʋegbe me…" : lang === "fra" ? "Écrivez en français…" : "Type in English…"}
+              placeholder={editing?.side === side ? "Fix the text, then Go" : PLACEHOLDERS[lang]}
               autoComplete="off"
               lang={lang === "ewe" ? "ee" : lang === "fra" ? "fr" : "en"}
               value={texts[side]}
@@ -266,31 +305,50 @@ export default function TranslatePage() {
       <main ref={listRef} className="chat" aria-live="polite">
         {entries.length === 0 && (
           <p className="empty">
-            One person speaks Eʋegbe, the other {NAMES[other]}. Each hears the other in their own language.
+            One person speaks Eʋegbe, the other {NAMES[other]}. Start live interpreting and just talk: each
+            hears the other in their own language.
           </p>
         )}
         {entries.map((e) => (
-          <div key={e.id} className={`bubble ${e.side === "ewe" ? "patient" : "assistant"} translation`}>
+          <div key={e.id} className={`bubble ${e.source === "ewe" ? "patient" : "assistant"} translation`}>
             <span className="from">{NAMES[e.source]} → {NAMES[e.target]}</span>
             <span className="said">{e.text}</span>
             <span className="meaning">{e.translation}</span>
-            <button className="play" onClick={() => say(e)}>▶ Play again</button>
+            <div className="entry-actions">
+              <button onClick={() => say(e)}>▶ Play</button>
+              <button onClick={() => sayAgain(e)}>↺ Say again</button>
+              {e.wav && <button onClick={() => wrongLanguage(e)} disabled={thinking}>⇄ Wrong language</button>}
+              <button onClick={() => edit(e)}>✎ Edit</button>
+            </div>
           </div>
         ))}
       </main>
 
       <footer className="controls">
-        {sidePanel("ewe")}
-        {sidePanel("other")}
+        {liveOn && (
+          <div className="who">
+            <span className="muted">Who speaks</span>
+            <div className="segmented" role="group" aria-label="Who speaks">
+              <button aria-pressed={speaker === "auto"} onClick={() => chooseSpeaker("auto")}>Auto</button>
+              <button aria-pressed={speaker === "ewe"} onClick={() => chooseSpeaker("ewe")}>Eʋegbe</button>
+              <button aria-pressed={speaker === "other"} onClick={() => chooseSpeaker("other")}>{NAMES[other]}</button>
+            </div>
+          </div>
+        )}
         <p className="status">{shownStatus}</p>
         <button
-          ref={micRef}
+          ref={liveRef}
           className={`live-toggle${liveOn ? " live" : ""}${liveOn && heard === "hearing" ? " hearing" : ""}`}
           aria-pressed={liveOn}
           onClick={onLive}
         >
           {liveOn ? "■ Stop live interpreting" : "● Start live interpreting"}
         </button>
+        <div className="sides">
+          <p className="label">{liveOn ? "Or type" : "Tap a microphone to talk, or type"}</p>
+          {sidePanel("ewe")}
+          {sidePanel("other")}
+        </div>
       </footer>
     </>
   );

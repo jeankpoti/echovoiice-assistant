@@ -1,11 +1,10 @@
 """Ewe speech recognition with Meta MMS (Massively Multilingual Speech).
 
-facebook/mms-1b-all is one CTC model with a small adapter per language;
-the Ewe adapter is loaded once at startup.
+The default model is MMS fine-tuned on everyday conversational Ewe. Multilingual MMS
+checkpoints such as facebook/mms-1b-all also work, with their Ewe adapter.
 """
 import io
 import logging
-import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -39,11 +38,8 @@ class MMSRecognizer:
     def __init__(self, model_name: str, language: str = settings.asr_language):
         self.model_name = model_name
         self.language = language if uses_language_adapter(model_name) else None
-        self.active_language = self.language
         self.processor = None
         self.model = None
-        # Switching the language adapter changes the model in place, so one call at a time
-        self.lock = threading.Lock()
 
     def load(self) -> None:
         if self.model is not None:
@@ -63,55 +59,26 @@ class MMSRecognizer:
             self.model = AutoModelForCTC.from_pretrained(self.model_name)
         self.model.eval()
 
-    def _use_language(self, language: str) -> None:
-        if language == self.active_language:
-            return
-        logger.info("Switching %s to the %s adapter", self.model_name, language)
-        self.processor.tokenizer.set_target_lang(language)
-        self.model.load_adapter(language)
-        self.active_language = language
-
-    def transcribe_audio(self, audio, language: str | None = None) -> str:
-        """Transcribe in `language` (an MMS code such as ewe, eng or fra); multilingual models only."""
+    def transcribe_audio(self, audio) -> str:
         import torch
 
         self.load()
-        with self.lock:
-            if self.language:
-                self._use_language(language or self.language)
-            elif language and language != settings.asr_language:
-                raise ValueError(f"{self.model_name} only knows one language")
-            inputs = self.processor(audio, sampling_rate=SAMPLE_RATE, return_tensors="pt")
-            with torch.no_grad():
-                logits = self.model(**inputs).logits
-            ids = torch.argmax(logits, dim=-1)[0]
-            return self.processor.decode(ids).strip()
+        inputs = self.processor(audio, sampling_rate=SAMPLE_RATE, return_tensors="pt")
+        with torch.no_grad():
+            logits = self.model(**inputs).logits
+        ids = torch.argmax(logits, dim=-1)[0]
+        return self.processor.decode(ids).strip()
 
 
 class EweRecognizer:
     """Runs one or more Ewe speech models on the same audio.
 
-    Everyday spoken Ewe and formal, Bible-style Ewe sound different, and each model is
-    better at one of them, so every version goes to Muse Spark, which works out the meaning.
+    With several models (ASR_MODELS), every version goes to Muse Spark, which works out
+    the meaning. One model is the default: see the note on asr_models in config.py.
     """
 
     def __init__(self, models=None):
         self.models = models if models is not None else [MMSRecognizer(name) for name in settings.asr_models]
-        self._multilingual = None
-
-    def multilingual(self) -> MMSRecognizer:
-        """The model that also hears English and French: shared with the Ewe ones when possible."""
-        if self._multilingual is None:
-            shared = [m for m in self.models if getattr(m, "model_name", None) == settings.multilingual_asr_model]
-            self._multilingual = shared[0] if shared else MMSRecognizer(settings.multilingual_asr_model)
-        return self._multilingual
-
-    def transcribe_in(self, data: bytes, language: str) -> str:
-        """Transcribe English (eng) or French (fra) speech for the Translate page."""
-        audio = load_audio(data)
-        if len(audio) < SAMPLE_RATE // 4:
-            return ""
-        return self.multilingual().transcribe_audio(audio, language)
 
     def load(self) -> None:
         for model in self.models:
@@ -122,12 +89,6 @@ class EweRecognizer:
         silence = np.zeros(SAMPLE_RATE, dtype=np.float32)
         for model in self.models:
             model.transcribe_audio(silence)
-        # Fetch the English and French adapters now, if their model is already loaded for Ewe
-        shared = self.multilingual()
-        if shared in self.models:
-            for language in ("eng", "fra"):
-                shared.transcribe_audio(silence, language)
-            shared.transcribe_audio(silence)  # back to Ewe
 
     def transcribe_all(self, data: bytes) -> list[str]:
         audio = load_audio(data)

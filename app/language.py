@@ -59,6 +59,47 @@ async def translate(
     return reply.strip().strip('"“”').strip()
 
 
+DETECT_PROMPT = """You are an interpreter helping two people talk face to face: one speaks Ewe (Eʋegbe), the other speaks {other}.
+Someone just spoke, in Ewe or in {other}. Two speech recognizers heard the same recording:
+- The Ewe recognizer only knows Ewe. On {other} speech it writes Ewe-looking nonsense.
+- The {other} recognizer only knows {other}. On Ewe speech it writes {other}-looking nonsense, or nothing.
+First decide which language was really spoken: the version that reads as real, meaningful speech.
+Then translate what was said into the other language.
+- Translate only. Never answer the message, add comments or explain.
+- Keep the speaker's meaning, tone and point of view: "I" stays "I" and "you" stays "you".
+- Speech recognition makes mistakes; translate what the speaker most likely meant.
+- When you write Ewe: {style}
+Answer ONLY with one JSON object, no other text:
+{{"spoken": "ewe" or "{code}", "text": "<what was said, cleaned up, in the language spoken>", "translation": "<the translation>"}}"""
+
+
+async def detect_and_translate(
+    llm: ChatModel, ewe_heard: List[str], other_heard: str, other: str
+) -> Dict[str, str]:
+    """For hands-free interpreting: work out whether Ewe or `other` was spoken, and translate it."""
+    if other not in ("eng", "fra"):
+        raise ValueError("The other language must be English or French.")
+    system = DETECT_PROMPT.format(other=LANGUAGES[other], code=other, style=EWE_STYLE)
+    ewe_lines = "\n".join(f"  {t}" for t in ewe_heard) or "  (nothing)"
+    message = f"Ewe recognizer:\n{ewe_lines}\n{LANGUAGES[other]} recognizer:\n  {other_heard or '(nothing)'}"
+    raw = await llm.chat([{"role": "system", "content": system}, {"role": "user", "content": message}])
+    match = re.search(r"\{.*\}", raw, re.DOTALL)
+    try:
+        data = json.loads(match.group(0)) if match else None
+    except json.JSONDecodeError:
+        data = None
+    if not isinstance(data, dict) or data.get("spoken") not in ("ewe", other) or not data.get("translation"):
+        raise LLMError("Could not read the translation from the model. Please try again.")
+    spoken = data["spoken"]
+    fallback = ewe_heard[0] if spoken == "ewe" and ewe_heard else other_heard
+    return {
+        "source": spoken,
+        "target": other if spoken == "ewe" else "ewe",
+        "text": str(data.get("text") or fallback).strip(),
+        "translation": str(data["translation"]).strip(),
+    }
+
+
 async def lesson(llm: ChatModel, text: str, source: str, other: str) -> Dict[str, str]:
     if source not in LANGUAGES or other not in ("eng", "fra"):
         raise ValueError("Learn words from or into Ewe, with English or French.")
