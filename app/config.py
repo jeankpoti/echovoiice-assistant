@@ -24,6 +24,8 @@ class Settings:
     meta_api_base: str = field(default_factory=lambda: os.getenv("META_API_BASE", "https://api.meta.ai/v1"))
     meta_model: str = field(default_factory=lambda: os.getenv("META_MODEL", "muse-spark-1.3"))
     meta_reasoning_effort: str = field(default_factory=lambda: os.getenv("META_REASONING_EFFORT", "minimal"))
+    # Seconds to wait for one Muse Spark answer before trying once more
+    llm_timeout: float = field(default_factory=lambda: float(os.getenv("LLM_TIMEOUT", "20")))
 
     # Ewe speech recognition (Meta MMS), comma-separated; every model hears each recording.
     # waxal-benchmarking/mms-300m-waxal-ewe is MMS fine-tuned on everyday conversational Ewe

@@ -28,7 +28,7 @@ class MuseSparkClient:
         base_url: str = settings.meta_api_base,
         model: str = settings.meta_model,
         reasoning_effort: str = settings.meta_reasoning_effort,
-        timeout: float = 60.0,
+        timeout: float = settings.llm_timeout,
         transport: httpx.AsyncBaseTransport | None = None,
     ):
         self.api_key = api_key
@@ -46,14 +46,21 @@ class MuseSparkClient:
         if self.reasoning_effort:
             payload["reasoning_effort"] = self.reasoning_effort
 
-        # The API now and then answers with no text at all; one retry usually gets a real reply
+        # Now and then the API is very slow or answers with no text at all; a second try
+        # usually comes back normally, so one retry beats waiting
+        problem = ""
         for attempt in range(2):
-            async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
-                response = await client.post(
-                    f"{self.base_url}/chat/completions",
-                    headers={"Authorization": f"Bearer {self.api_key}"},
-                    json=payload,
-                )
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
+                    response = await client.post(
+                        f"{self.base_url}/chat/completions",
+                        headers={"Authorization": f"Bearer {self.api_key}"},
+                        json=payload,
+                    )
+            except httpx.TimeoutException:
+                problem = f"Meta Model API did not answer within {self.timeout:.0f} seconds."
+                logger.warning("%s (attempt %d)", problem, attempt + 1)
+                continue
             if response.status_code != 200:
                 raise LLMError(f"Meta Model API returned {response.status_code}: {response.text[:300]}")
 
@@ -64,9 +71,7 @@ class MuseSparkClient:
                 raise LLMError(f"Unexpected Meta Model API response: {response.text[:300]}") from e
             if isinstance(content, str) and content.strip():
                 return content
-            logger.warning(
-                "Meta Model API returned an empty reply (attempt %d, finish_reason=%s): %s",
-                attempt + 1, choice.get("finish_reason"), response.text[:500],
-            )
+            problem = f"Meta Model API returned an empty reply (finish_reason={choice.get('finish_reason')})."
+            logger.warning("%s (attempt %d): %s", problem, attempt + 1, response.text[:500])
 
-        raise LLMError(f"Meta Model API returned an empty reply (finish_reason={choice.get('finish_reason')}).")
+        raise LLMError(f"{problem} Please try again.")

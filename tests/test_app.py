@@ -201,6 +201,31 @@ async def test_muse_spark_client_empty_reply_is_llm_error():
 
 
 @pytest.mark.asyncio
+async def test_muse_spark_client_retries_after_a_timeout():
+    calls = []
+
+    def handler(request: httpx.Request):
+        calls.append(1)
+        if len(calls) == 1:
+            raise httpx.ReadTimeout("slow", request=request)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "Woezɔ"}}]})
+
+    client = MuseSparkClient(api_key="k", transport=httpx.MockTransport(handler))
+    assert await client.chat([{"role": "user", "content": "hi"}]) == "Woezɔ"
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_muse_spark_client_gives_up_after_two_timeouts():
+    def handler(request: httpx.Request):
+        raise httpx.ReadTimeout("slow", request=request)
+
+    client = MuseSparkClient(api_key="k", timeout=5, transport=httpx.MockTransport(handler))
+    with pytest.raises(LLMError, match="within 5 seconds"):
+        await client.chat([{"role": "user", "content": "hi"}])
+
+
+@pytest.mark.asyncio
 async def test_muse_spark_client_needs_key():
     with pytest.raises(LLMError):
         await MuseSparkClient(api_key="").chat([])
