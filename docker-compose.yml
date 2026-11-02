@@ -1,0 +1,60 @@
+# One command starts everything a judge needs:  docker compose up --build
+# Then open http://localhost:3001
+#
+# - web:        the Next.js frontend (built during the hackathon)
+# - assistant:  this repository's API (built during the hackathon)
+# - echovoiice: the existing EchoVoiice TTS API, built unmodified straight from its
+#               public GitHub repository. It was made before the hackathon.
+
+services:
+  web:
+    build:
+      context: ./web
+      args:
+        API_URL: http://assistant:8080
+    ports:
+      - "3001:3000"
+    depends_on:
+      - assistant
+    restart: unless-stopped
+
+  assistant:
+    build: .
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      ECHOVOIICE_URL: http://echovoiice:8000
+      ECHOVOIICE_ACCOUNT_EMAIL: assistant@example.com
+      ECHOVOIICE_ACCOUNT_PASSWORD: Assistant-Demo-2026
+      PRELOAD_MODELS: "true"
+    volumes:
+      - meta_models:/models
+    depends_on:
+      - echovoiice
+    restart: unless-stopped
+
+  echovoiice:
+    build:
+      context: https://github.com/jeankpoti/echoVoiice.git#main
+      target: base
+    environment:
+      SECRET_KEY: local-demo-secret-change-me
+      JWT_SECRET_KEY: local-demo-jwt-secret-change-me
+      DATABASE_URL: sqlite:///./data/echovoiice.db
+      CACHE_ENABLED: "true"
+      COQUI_TOS_AGREED: "1"
+      # EchoVoiice runs as a non-root user with no home folder, so point the
+      # caches it writes at folders that user can write to
+      NUMBA_CACHE_DIR: /tmp/numba_cache
+      MPLCONFIGDIR: /tmp/matplotlib
+      HOME: /tmp
+      XDG_DATA_HOME: /app/data/models
+    volumes:
+      - echovoiice_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  meta_models:
+  echovoiice_data:

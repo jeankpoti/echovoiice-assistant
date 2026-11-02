@@ -1,0 +1,32 @@
+{
+  "_note": "Sample data for the demo. Replace with the real facility's information.",
+  "name": "Demo district hospital",
+  "city": "Lomé, Togo",
+  "languages_spoken_by_staff": ["French"],
+  "opening_hours": {
+    "reception": "Every day, 24 hours",
+    "consultations": "Monday to Saturday, 7:30 to 17:00",
+    "laboratory": "Monday to Saturday, 7:00 to 15:00",
+    "pharmacy": "Every day, 7:00 to 22:00"
+  },
+  "departments": [
+    {"name": "Reception and registration", "location": "Ground floor, at the main entrance", "what_happens": "Every patient registers here first and gets a patient card. Bring an ID card if you have one."},
+    {"name": "Cashier", "location": "Ground floor, next to reception", "what_happens": "Pay for the consultation ticket before seeing a doctor. Keep the receipt."},
+    {"name": "Emergency", "location": "Separate entrance on the left side of the building, open 24 hours", "what_happens": "For urgent cases. Patients are seen in order of urgency, not arrival."},
+    {"name": "General consultation", "location": "Ground floor, corridor A", "what_happens": "Wait on the benches until your number is called. A nurse takes your temperature and blood pressure first."},
+    {"name": "Maternity", "location": "Building B, behind the main building", "what_happens": "Pregnancy follow-up and deliveries. Bring your pregnancy booklet."},
+    {"name": "Pediatrics", "location": "First floor, corridor C", "what_happens": "Consultations for children under 15. A parent must come with the child."},
+    {"name": "Laboratory", "location": "Ground floor, corridor B", "what_happens": "Bring the doctor's request form and the payment receipt. Some tests need you to come without eating."},
+    {"name": "Pharmacy", "location": "Ground floor, next to the exit", "what_happens": "Bring the prescription written by the doctor."}
+  ],
+  "urgent_signs": [
+    "difficulty breathing",
+    "chest pain",
+    "heavy bleeding",
+    "loss of consciousness or fainting",
+    "seizures",
+    "severe burns",
+    "a pregnant woman with bleeding or strong pain",
+    "a child who cannot drink or is very weak"
+  ]
+}
