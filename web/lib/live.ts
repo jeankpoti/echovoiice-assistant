@@ -32,8 +32,8 @@ const MIN_THRESHOLD = 0.012; // RMS below this is never speech
 const START_MS = 150; // loud this long to count as speech
 const BARGE_IN_MS = 300; // stricter while the assistant talks, so its own voice does not trigger it
 // Quiet this long ends the utterance. People pause to breathe or think mid-sentence,
-// so this sits well above a normal pause between words.
-const END_SILENCE_MS = 1600;
+// so it sits above a normal pause between words. The page can change it (Pause setting).
+const END_SILENCE_MS = 1100;
 const MIN_SPEECH_MS = 350; // shorter bursts are noise (a cough, a click)
 const MAX_SPEECH_MS = 60_000;
 const PREROLL_MS = 300; // keep audio from just before speech was detected
@@ -51,8 +51,13 @@ export class LiveListener {
   private preroll: Float32Array[] = [];
   private prerollMs = 0;
   private speech: Float32Array[] = [];
+  private endSilenceMs = END_SILENCE_MS;
 
   constructor(private cb: Callbacks) {}
+
+  setEndSilence(ms: number) {
+    this.endSilenceMs = ms;
+  }
 
   async start() {
     this.stream = await navigator.mediaDevices.getUserMedia({
@@ -145,7 +150,7 @@ export class LiveListener {
     // rather than the entry bar, so soft syllables and word endings still count
     const stayThreshold = Math.max(MIN_THRESHOLD * 0.4, this.floor * 1.8);
     this.quietMs = rms > stayThreshold ? 0 : this.quietMs + ms;
-    if (this.quietMs >= END_SILENCE_MS || this.speechMs >= MAX_SPEECH_MS) this.finish();
+    if (this.quietMs >= this.endSilenceMs || this.speechMs >= MAX_SPEECH_MS) this.finish();
   }
 
   private finish() {

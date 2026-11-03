@@ -81,3 +81,57 @@ export function speakText(text: string, lang: "eng" | "fra"): Promise<void> {
     speechSynthesis.speak(utterance);
   });
 }
+
+export interface Spoken {
+  audio?: string | null; // Ewe: base64 WAV from the server
+  text?: string; // English or French: spoken by the browser
+  lang?: "eng" | "fra";
+}
+
+// Plays sentences one after another as they arrive. `finished` resolves once end() was
+// called and everything has played, or when stop() cuts it short.
+export class SpeechQueue {
+  private items: Spoken[] = [];
+  private closed = false;
+  private stopped = false;
+  private wake: (() => void) | null = null;
+  readonly finished: Promise<void>;
+
+  constructor(items: Spoken[] = []) {
+    this.items = [...items];
+    this.finished = this.run();
+  }
+
+  add(item: Spoken) {
+    if (this.stopped) return;
+    this.items.push(item);
+    this.wake?.();
+  }
+
+  end() {
+    this.closed = true;
+    this.wake?.();
+  }
+
+  stop() {
+    this.stopped = true;
+    this.items = [];
+    stopPlayback();
+    this.wake?.();
+  }
+
+  private async run() {
+    for (;;) {
+      if (this.stopped) return;
+      const item = this.items.shift();
+      if (item) {
+        if (item.audio) await play(item.audio);
+        else if (item.text && item.lang) await speakText(item.text, item.lang);
+        continue;
+      }
+      if (this.closed) return;
+      await new Promise<void>((resolve) => (this.wake = resolve));
+      this.wake = null;
+    }
+  }
+}

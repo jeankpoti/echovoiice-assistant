@@ -18,7 +18,7 @@ Someone speaks Ewe
 They hear the reply in Ewe
 ```
 
-Muse Spark, through the Meta Model API, does all the language work: conversation, translation, word lessons and, on the Translate page, deciding which language was spoken. It reads and writes Ewe directly, so there is no separate translation model. English and French speech is transcribed by Muse Voice Transcribe on the same API. Only Ewe speech recognition and the fallback voice run locally.
+Muse Spark, through the Meta Model API, does all the language work: conversation, translation, word lessons and, on the Translate page, deciding which language was spoken. It reads and writes Ewe directly, with an everyday Ewe reference sheet in its prompt (see below), so there is no separate translation model. English and French speech is transcribed by Muse Voice Transcribe on the same API. Only Ewe speech recognition and the fallback voice run locally.
 
 ### Hearing everyday Ewe
 
@@ -39,6 +39,44 @@ Adding `facebook/mms-1b-all` barely helps at best, while costing about 1.5 secon
 
 English and French speech (Translate page) is transcribed by Muse Voice Transcribe, and English and French replies are spoken by the browser's own voices.
 
+### Understanding everyday Ewe
+
+Once Ewe is written down, the hard part is reading it right. Muse Spark on its own mistranslated even carefully typed Ewe: `Dɔ le wuyem` ("I'm hungry") came out as "I'm sick", `Kɔdzi la le afikae?` ("Where is the hospital?") as "Where is the key?", and Muslims praying as thieves making noise. Turning up its reasoning effort made it 2 to 5 times slower without fixing this.
+
+So every Muse Spark prompt that reads or writes Ewe (Talk, Translate, live language detection, Learn) includes [`app/prompts/ewe_reference.md`](app/prompts/ewe_reference.md). It is a reference sheet with about 250 everyday words, the grammar that changes meaning (negation, questions, tense), and the mistakes speech recognition makes (missing tone marks, joined words, swapped letters). Muse Spark is told to repair the transcript with it first, and to choose the plain everyday meaning when unsure.
+
+We measured Ewe → English on 20 everyday sentences (each one as typed and as speech recognition writes it) and 11 WAXAL recordings (human and machine transcripts). Each translation was scored 2 (right), 1 (partly right) or 0 (wrong):
+
+| Setup | Everyday sentences (of 80) | WAXAL recordings (of 44) | Time per translation |
+| --- | --- | --- | --- |
+| Muse Spark alone (before) | 61 | 13 | 3.1 s |
+| **Muse Spark + Ewe reference (used)** | **78** | **39** | **2.4 s** |
+| Meta NLLB-200 draft, corrected by Muse Spark | 80 | 40 | 2.6 s + 6.5 s for NLLB |
+| Meta NLLB-200 alone | 59 | 11 | 6.5 s |
+
+The reference sheet was written while looking at these test sentences, so the scores are on the optimistic side. Adding NLLB-200 barely helped and made every translation 6.5 s slower, so translation stays on Muse Spark alone.
+
+**Teach it more Ewe:** when a word or phrase comes out wrong, add it under "Added by the team" at the end of `ewe_reference.md`. It is read on every request, so no restart is needed (in Docker, rebuild or mount the file). A native speaker should review the sheet.
+
+### Dialects and spellings
+
+[`app/data/ewe_lexicon.csv`](app/data/ewe_lexicon.csv) lists dialect forms (Aŋlɔ, inland Kpelegbe, Gen/Mina), phonetic spellings and keyboard fallbacks (`d` for `ɖ`, `v` for `ʋ`), each with its standard Ewe:
+
+| Column | Meaning |
+| --- | --- |
+| `Standard_Ewe` | The standard form, e.g. `Meɖe kuku` |
+| `User_Input_Variation` | What people say or type, e.g. `Mede kuku` |
+| `Variation_Type` | Orthography, Phonetic Text, Dialect Swap, Contraction, Vowel Shift or Phrase Extension |
+| `English_Translation`, `Dialect_Note` | What it means, and where it is said |
+| `Status` | `ok` to use the row, `check` to skip it until a native speaker confirms it |
+
+The lexicon is used in two ways, without any extra API call:
+
+- **A whole message that is a known variant is replaced before Muse Spark sees it.** For example, "medekuku", "Mede kuku!" or "woezor" become `Meɖe kuku` or `Woezɔ`. Matching ignores case, punctuation, tone marks and `ɖ/d`, `ʋ/v`, `ƒ/f`, `ŋ/n`, `ɔ/o`, `ɛ/e` swaps. Single words inside a sentence are never swapped, because a row like `Wu → Ʋu` would break `dɔ le wuyem` ("I'm hungry"). "Phrase Extension" rows are already correct Ewe and are kept as said.
+- **Every variant goes into Muse Spark's Ewe reference** as a hint, so it also recognises them inside longer sentences.
+
+Rows that looked doubtful when the file was added are marked `check` (for example `Eƒo ã?` for "have you woken up", where "wake up" is `fɔ`). To use one of them, fix it if needed and set it to `ok`. With the lexicon in place, the everyday benchmark above scores 80 of 80.
+
 ## Talk
 
 Two assistants:
@@ -48,16 +86,27 @@ Two assistants:
 
 Two ways to talk:
 
-- **Live**: a hands-free conversation. The browser keeps listening, notices when you stop talking (a pause of about 1.6 seconds), and sends what you said. While the assistant answers you can just talk to interrupt it.
+- **Live**: a hands-free conversation. The browser keeps listening, notices when you stop talking, and sends what you said. While the assistant answers you can just talk to interrupt it. **Pause before reply** sets how long it waits after you stop: Short (0.7 s), Normal (1.1 s, the default) or Long (1.6 s, more time to think mid-sentence without being cut off).
 - **Tap to talk**: tap to start, tap again to send.
 
 You can also type in Ewe.
+
+## Speed
+
+Replies are spoken sentence by sentence: as soon as Muse Spark has written the first sentence it is voiced and played, while the rest is still being written and voiced. Measured on this setup:
+
+| | First words heard after the request |
+| --- | --- |
+| Talk, typed or spoken Ewe | about 1.5 to 2 s (was 3 to 5 s) |
+| Translate, spoken English or French into Ewe, language detected automatically | about 3.6 to 4 s (was 4.5 to 5 s, often more) |
+
+Other things that keep it quick: one kept-open connection to the Meta Model API (a new secure connection per call cost about 0.6 s), `META_REASONING_EFFORT=minimal`, a single everyday-Ewe speech model, and a Muse Spark call that takes longer than `LLM_TIMEOUT` is retried instead of waited on. When EchoVoiice keeps failing, the app waits longer each time before trying it again (up to an hour).
 
 ## Translate
 
 Choose English or Français at the top; Ewe is always the other side. The pairs are Ewe ⇄ English and Ewe ⇄ French; English ⇄ French is not offered.
 
-With **Start live interpreting** the app listens hands-free and either person just talks: it works out whether they spoke Ewe or the other language and speaks the translation to the other person. To do that, the Ewe recognizer and Muse Voice Transcribe both hear each recording, and Muse Spark decides which version is real speech, then translates it. If it guesses wrong, set **Who speaks** to one language. The microphone stays off while a translation plays, so the app does not translate its own voice.
+With **Start live interpreting** the app listens hands-free (with the same **Pause before reply** setting as Talk) and either person just talks: it works out whether they spoke Ewe or the other language and speaks the translation to the other person. To do that, the Ewe recognizer and Muse Voice Transcribe both hear each recording, and Muse Spark decides which version is real speech, then translates it. If it guesses wrong, set **Who speaks** to one language. The microphone stays off while a translation plays, so the app does not translate its own voice.
 
 Each translation can be fixed:
 
@@ -142,6 +191,7 @@ Settings come from environment variables or `.env` (see [`.env.example`](.env.ex
 | `META_API_BASE` | `https://api.meta.ai/v1` | Meta Model API address |
 | `META_MODEL` | `muse-spark-1.3` | Model used for conversation, translation and lessons |
 | `META_REASONING_EFFORT` | `minimal` | `minimal` answers about twice as fast as `low` |
+| `LLM_TIMEOUT` | `20` | Seconds to wait for one Muse Spark answer before trying once more |
 | `ASR_MODELS` | `waxal-benchmarking/mms-300m-waxal-ewe` | Ewe speech models, comma-separated; all run on every recording |
 | `ASR_LANGUAGE` | `ewe` | Language adapter for multilingual MMS models such as `facebook/mms-1b-all` |
 | `VOICE_TRANSCRIBE_MODEL` | `muse-voice-transcribe-1.0` | Transcribes English and French on the Translate page |
@@ -151,7 +201,7 @@ Settings come from environment variables or `.env` (see [`.env.example`](.env.ex
 | `TTS_SPEED` | `1.1` | EchoVoiice speaking speed, 0.5 to 2.0 |
 | `USE_TTS_FALLBACK` | `true` | Speak with Meta MMS-TTS when EchoVoiice fails |
 | `TTS_FALLBACK_MODEL` | `facebook/mms-tts-ewe` | The fallback voice |
-| `ECHOVOIICE_RETRY_SECONDS` | `300` | After EchoVoiice fails, use the fallback straight away for this long |
+| `ECHOVOIICE_RETRY_SECONDS` | `300` | After EchoVoiice fails, use the fallback straight away for this long; doubled after each failure in a row, up to an hour |
 | `DEFAULT_MODE` | `general` | Assistant for new Talk sessions: `general` or `hospital` |
 | `MAX_HISTORY_TURNS` | `12` | Earlier exchanges the assistant remembers |
 | `FACILITY_FILE` | `app/data/hospital.json` | Hospital facts for the hospital guide |
@@ -167,10 +217,14 @@ Settings come from environment variables or `.env` (see [`.env.example`](.env.ex
 | `GET /v1/sessions/{id}/summary` | French summary for staff, urgent flag, department |
 | `POST /v1/translate` | JSON `text`, `source`, `target` (one of them `ewe`, the other `eng` or `fra`). Returns the translation, with Ewe audio when translating into Ewe |
 | `POST /v1/translate/audio` | Form fields `other` (`eng` or `fra`), `audio` (WAV) and optional `source` (`auto`, the default, or `ewe`/`eng`/`fra`). With `auto`, works out which language was spoken. Returns the detected `source` and `target` with the translation |
+| `POST /v1/converse/stream` | Form fields `session_id` and `audio` (WAV) or `text`. Streams the reply sentence by sentence as NDJSON (see below) |
+| `POST /v1/translate/stream` | Form fields `other`, `source` (`auto` needs `audio`) and `audio` or `text`. Streams the translation sentence by sentence as NDJSON |
 | `POST /v1/learn` | JSON `text`, `source` (`eng`, `fra` or `ewe`) and, for Ewe words, `other` (`eng` or `fra`). Returns the Ewe, its meaning, pronunciation, an example and audio |
 | `GET /health` | Configuration status |
 
-The server logs how long each step takes (`Heard ... (asr=...)` and `Timing: llm=... tts=...`).
+The server logs how long each step takes: `Heard ... (asr=...)`, `Timing: llm=... tts=...`, and for streamed replies `Timing: first sentence ready after ...`.
+
+The streaming endpoints send one JSON event per line: `{"type": "heard", "text", "alternatives", ...}` with what was said, then `{"type": "sentence", "text", "audio_wav_base64"}` for each sentence in order (Ewe comes with audio; English and French are spoken by the browser), then `{"type": "done", "text", ...}` with the whole reply. If something fails after the stream has started, the last line is `{"type": "error", "detail"}`.
 
 ## Tests
 

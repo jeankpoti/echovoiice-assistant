@@ -3,6 +3,7 @@
 The primary voice is the existing EchoVoiice API (Coqui TTS, Ewe VITS), called over
 HTTP as a dependency. If it is unreachable, Meta MMS-TTS for Ewe speaks instead.
 """
+import asyncio
 import io
 import logging
 import time
@@ -127,20 +128,29 @@ class Speaker:
         self.fallback = fallback
         self.retry_seconds = retry_seconds
         self.primary_down_until = 0.0
+        self.primary_failures = 0
 
     async def speak(self, text: str) -> tuple[bytes, str]:
         """Returns (wav bytes, name of the voice used)."""
         # While EchoVoiice is known to be down, go straight to the fallback rather than
         # waiting for it to fail again on every reply
         if self.fallback is not None and time.monotonic() < self.primary_down_until:
-            return self.fallback.synthesize(text), "mms-tts"
+            return await self._fallback(text), "mms-tts"
         try:
-            return await self.primary.synthesize(text, speed=settings.tts_speed), "echovoiice"
+            audio = await self.primary.synthesize(text, speed=settings.tts_speed)
+            self.primary_failures = 0
+            return audio, "echovoiice"
         except (TTSError, httpx.HTTPError) as e:
             if self.fallback is None:
                 raise TTSError(str(e)) from e
-            self.primary_down_until = time.monotonic() + self.retry_seconds
-            logger.warning(
-                "EchoVoiice unavailable (%s), using MMS-TTS fallback for the next %.0fs", e, self.retry_seconds
-            )
-            return self.fallback.synthesize(text), "mms-tts"
+            # Wait longer after each failure in a row (up to an hour): a voice that keeps
+            # failing, like EchoVoiice crashing on Apple Silicon, is not worth a slow try every few minutes
+            self.primary_failures += 1
+            wait = min(self.retry_seconds * 2 ** (self.primary_failures - 1), 3600)
+            self.primary_down_until = time.monotonic() + wait
+            logger.warning("EchoVoiice unavailable (%s), using MMS-TTS fallback for the next %.0fs", e, wait)
+            return await self._fallback(text), "mms-tts"
+
+    async def _fallback(self, text: str) -> bytes:
+        # Off the event loop, so streamed replies keep flowing while it runs
+        return await asyncio.to_thread(self.fallback.synthesize, text)

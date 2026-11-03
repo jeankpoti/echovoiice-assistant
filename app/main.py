@@ -1,12 +1,14 @@
 """EchoVoiice Assistant API: talk with an assistant in Ewe, translate Ewe <-> English/French, learn Ewe words."""
 import asyncio
 import base64
+import json
 import logging
 import time
 from contextlib import asynccontextmanager
-from typing import Literal, Optional
+from typing import AsyncIterator, Literal, Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from .asr import EweRecognizer
@@ -14,6 +16,7 @@ from .config import settings
 from . import language
 from .conversation import GREETING_EWE, GREETING_FR, Assistant, Turn
 from .llm import LLMError, MuseSparkClient
+from .streaming import spoken_sentences
 from .transcribe import MuseVoiceTranscriber
 from .tts import EchoVoiiceClient, MMSTTS, Speaker, TTSError
 
@@ -232,6 +235,21 @@ def create_app(
         logger.info("Heard (%s): %s (asr=%.1fs)", lang, " | ".join(transcripts), time.perf_counter() - started)
         return transcripts
 
+    async def hear_both(data: bytes, other: str) -> tuple[list[str], str]:
+        """For language detection: the Ewe models and Muse Voice Transcribe hear the same audio."""
+        started = time.perf_counter()
+        ewe, heard_other = await asyncio.gather(transcribe(data, "ewe"), transcribe(data, other), return_exceptions=True)
+        for result in (ewe, heard_other):
+            if isinstance(result, Exception):
+                logger.warning("One recognizer failed during language detection: %s", result)
+        ewe = [] if isinstance(ewe, Exception) else ewe
+        heard_other = "" if isinstance(heard_other, Exception) or not heard_other else heard_other[0]
+        logger.info("Heard (auto): ewe=%s | %s=%s (asr=%.1fs)", " | ".join(ewe), other, heard_other,
+                    time.perf_counter() - started)
+        if not ewe and not heard_other:
+            raise HTTPException(status_code=422, detail="No speech was recognized. Please try again.")
+        return ewe, heard_other
+
     @app.post("/v1/converse", response_model=TurnResponse)
     async def converse(session_id: str = Form(...), audio: UploadFile = File(...)):
         session = session_or_404(session_id)
@@ -277,18 +295,7 @@ def create_app(
             target = other if source == "ewe" else "ewe"
             return await run_translation(transcripts[0], source, target, transcripts[1:])
 
-        data = await read_upload(audio)
-        started = time.perf_counter()
-        ewe, heard_other = await asyncio.gather(transcribe(data, "ewe"), transcribe(data, other), return_exceptions=True)
-        for result in (ewe, heard_other):
-            if isinstance(result, Exception):
-                logger.warning("One recognizer failed during language detection: %s", result)
-        ewe = [] if isinstance(ewe, Exception) else ewe
-        heard_other = "" if isinstance(heard_other, Exception) or not heard_other else heard_other[0]
-        logger.info("Heard (auto): ewe=%s | %s=%s (asr=%.1fs)", " | ".join(ewe), other, heard_other,
-                    time.perf_counter() - started)
-        if not ewe and not heard_other:
-            raise HTTPException(status_code=422, detail="No speech was recognized. Please try again.")
+        ewe, heard_other = await hear_both(await read_upload(audio), other)
         if not heard_other:
             return await run_translation(ewe[0], "ewe", other, ewe[1:])
         if not ewe:
@@ -300,6 +307,105 @@ def create_app(
             raise HTTPException(status_code=502, detail=str(e)) from e
         voice = await speak(result["translation"]) if result["target"] == "ewe" else {}
         return TranslateResponse(**result, **voice)
+
+    # --- Streaming: replies are spoken sentence by sentence while Muse Spark writes them.
+    # The response is NDJSON, one event per line:
+    #   {"type": "heard", "text", "alternatives", ...}   what the person said
+    #   {"type": "sentence", "text", "audio_wav_base64"?, "tts_error"?}   in order; audio for Ewe
+    #   {"type": "done", "text", ...}   the whole reply
+    #   {"type": "error", "detail"}   if something fails after the response has started
+
+    def ndjson(events: AsyncIterator[dict]) -> StreamingResponse:
+        async def lines():
+            try:
+                async for event in events:
+                    yield json.dumps(event, ensure_ascii=False) + "\n"
+            except LLMError as e:
+                yield json.dumps({"type": "error", "detail": str(e)}) + "\n"
+            except Exception:
+                logger.exception("Streamed reply failed")
+                yield json.dumps({"type": "error", "detail": "Something went wrong. Please try again."}) + "\n"
+
+        return StreamingResponse(lines(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache"})
+
+    async def sentence_events(pieces: AsyncIterator[str], ewe_voice: bool) -> AsyncIterator[dict]:
+        started = time.perf_counter()
+        count = 0
+        async for sentence in spoken_sentences(pieces, speak if ewe_voice else None):
+            count += 1
+            if count == 1:
+                logger.info("Timing: first sentence ready after %.1fs", time.perf_counter() - started)
+            yield {"type": "sentence", **sentence}
+        logger.info("Timing: %d sentences in %.1fs", count, time.perf_counter() - started)
+
+    @app.post("/v1/converse/stream")
+    async def converse_stream(
+        session_id: str = Form(...), text: Optional[str] = Form(None), audio: Optional[UploadFile] = File(None)
+    ):
+        """Talk, streamed: send `audio` (WAV) or typed Ewe `text`."""
+        session = session_or_404(session_id)
+        if audio is not None:
+            heard = await hear(audio)
+        elif text and text.strip():
+            heard = [text.strip()[:2000]]
+        else:
+            raise HTTPException(status_code=422, detail="Send audio or text.")
+
+        async def events():
+            yield {"type": "heard", "text": heard[0], "alternatives": heard[1:]}
+            pieces = assistant.respond_stream(session, heard[0], heard[1:])
+            async for event in sentence_events(pieces, ewe_voice=True):
+                yield event
+            turn = session.turns[-1]
+            yield {"type": "done", "text": turn.reply_ewe, "staff_summary_fr": turn.staff_summary_fr,
+                   "urgent": turn.urgent, "department": turn.department}
+
+        return ndjson(events())
+
+    @app.post("/v1/translate/stream")
+    async def translate_stream(
+        other: Literal["eng", "fra"] = Form(...),
+        source: Literal["auto", "ewe", "eng", "fra"] = Form("auto"),
+        text: Optional[str] = Form(None),
+        audio: Optional[UploadFile] = File(None),
+    ):
+        """Translate, streamed. Like /v1/translate/audio, or typed `text` with a fixed `source`."""
+        if source not in ("auto", "ewe", other):
+            raise HTTPException(status_code=422, detail="Translation goes between Ewe and the chosen language.")
+        if audio is None and not (text and text.strip()):
+            raise HTTPException(status_code=422, detail="Send audio or text.")
+        if audio is None and source == "auto":
+            raise HTTPException(status_code=422, detail="Say which language the typed text is in.")
+
+        try:
+            if source != "auto":
+                heard = await hear(audio, source) if audio is not None else [text.strip()[:2000]]
+                said, alternatives = heard[0], heard[1:]
+                target = other if source == "ewe" else "ewe"
+                pieces = language.translate_stream(assistant.llm, said, source, target, alternatives)
+            else:
+                ewe, heard_other = await hear_both(await read_upload(audio), other)
+                if not heard_other or not ewe:
+                    source = "ewe" if ewe else other
+                    said, alternatives = (ewe[0], ewe[1:]) if ewe else (heard_other, [])
+                    target = other if source == "ewe" else "ewe"
+                    pieces = language.translate_stream(assistant.llm, said, source, target, alternatives)
+                else:
+                    source, pieces = await language.detect_and_translate_stream(assistant.llm, ewe, heard_other, other)
+                    said, alternatives = (ewe[0], ewe[1:]) if source == "ewe" else (heard_other, [])
+                    target = other if source == "ewe" else "ewe"
+        except LLMError as e:
+            raise HTTPException(status_code=502, detail=str(e)) from e
+
+        async def events():
+            yield {"type": "heard", "text": said, "alternatives": alternatives, "source": source, "target": target}
+            parts = []
+            async for event in sentence_events(pieces, ewe_voice=target == "ewe"):
+                parts.append(event["text"])
+                yield event
+            yield {"type": "done", "text": " ".join(parts), "source": source, "target": target}
+
+        return ndjson(events())
 
     @app.post("/v1/learn", response_model=LearnResponse)
     async def learn(request: LearnRequest):

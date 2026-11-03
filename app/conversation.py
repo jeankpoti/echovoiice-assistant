@@ -4,12 +4,11 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Dict, List, Optional
+from typing import AsyncIterator, Dict, List, Optional
 
-from .config import BASE_DIR, settings
+from .config import settings
+from .ewe_guides import PROMPTS_DIR, ewe_reference, ewe_style_guide, normalize_whole
 from .llm import ChatModel
-
-PROMPTS_DIR = BASE_DIR / "prompts"
 
 # "general" chats about anything; "hospital" is the reception guide with a staff summary.
 MODES = ("general", "hospital")
@@ -41,12 +40,6 @@ class Session:
     turns: List[Turn] = field(default_factory=list)
 
 
-def ewe_style_guide() -> str:
-    """Shared guidance (and examples you add) for everyday, spoken Ewe; HTML comments are left out."""
-    text = (PROMPTS_DIR / "ewe_style.md").read_text(encoding="utf-8")
-    return re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL).strip()
-
-
 def build_system_prompt(mode: str = "general") -> str:
     template = (PROMPTS_DIR / f"{mode}.md").read_text(encoding="utf-8")
     if mode == "hospital":
@@ -56,7 +49,7 @@ def build_system_prompt(mode: str = "general") -> str:
         prompt = template.format(
             reply_language_instruction=REPLY_IN_EWE, today=date.today().strftime("%A %d %B %Y")
         )
-    return f"{prompt}\n\n{ewe_style_guide()}"
+    return f"{prompt}\n\n{ewe_style_guide()}\n\n{ewe_reference()}"
 
 
 def format_heard(heard: List[str]) -> str:
@@ -100,20 +93,17 @@ class Assistant:
     def get_session(self, session_id: str) -> Optional[Session]:
         return self.sessions.get(session_id)
 
-    async def respond(self, session: Session, user_text: str, alternatives: Optional[List[str]] = None) -> Turn:
-        """user_text is what the person said; alternatives are other speech-recognition
-        versions of the same audio, from models tuned for other kinds of Ewe."""
-        heard = [user_text] + [a for a in (alternatives or []) if a != user_text]
+    def _prepare(self, session: Session, user_text: str, alternatives: Optional[List[str]]):
+        # A known dialect or spelling variant, said on its own, becomes standard Ewe
+        heard = [normalize_whole(user_text) or user_text] + [a for a in (alternatives or []) if a != user_text]
         model_input = format_heard(heard)
-
         messages = [{"role": "system", "content": build_system_prompt(session.mode)}]
         messages += session.history
         messages.append({"role": "user", "content": model_input})
+        return model_input, messages
 
-        raw = await self.llm.chat(messages)
+    def _record(self, session: Session, user_text: str, model_input: str, raw: str) -> Turn:
         data = parse_reply(raw)
-        reply_ewe = data["reply"]
-
         session.history += [
             {"role": "user", "content": model_input},
             {"role": "assistant", "content": raw},
@@ -127,10 +117,34 @@ class Assistant:
 
         turn = Turn(
             user_text=user_text,
-            reply_ewe=reply_ewe,
+            reply_ewe=data["reply"],
             staff_summary_fr=session.staff_summary_fr,
             urgent=session.urgent,
             department=session.department,
         )
         session.turns.append(turn)
         return turn
+
+    async def respond(self, session: Session, user_text: str, alternatives: Optional[List[str]] = None) -> Turn:
+        """user_text is what the person said; alternatives are other speech-recognition
+        versions of the same audio, from other Ewe models (ASR_MODELS)."""
+        model_input, messages = self._prepare(session, user_text, alternatives)
+        raw = await self.llm.chat(messages)
+        return self._record(session, user_text, model_input, raw)
+
+    async def respond_stream(
+        self, session: Session, user_text: str, alternatives: Optional[List[str]] = None
+    ) -> AsyncIterator[str]:
+        """Like respond, but yields the reply in pieces as it is written. The finished
+        turn is then session.turns[-1]."""
+        model_input, messages = self._prepare(session, user_text, alternatives)
+        if session.mode == "hospital":
+            # The hospital guide answers in JSON, which can only be read once complete
+            raw = await self.llm.chat(messages)
+            yield self._record(session, user_text, model_input, raw).reply_ewe
+            return
+        raw = ""
+        async for delta in self.llm.stream(messages):
+            raw += delta
+            yield delta
+        self._record(session, user_text, model_input, raw)

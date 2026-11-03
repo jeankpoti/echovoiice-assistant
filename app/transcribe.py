@@ -3,6 +3,7 @@
 POST {base}/asr/transcribe, multipart: a JSON `request` part and a WAV `audio` part
 (mono 16-bit PCM at 16 kHz). Ewe is not one of its languages; Ewe goes through MMS.
 """
+import asyncio
 import io
 import json
 
@@ -30,6 +31,17 @@ class MuseVoiceTranscriber:
         self.model = model
         self.timeout = timeout
         self.transport = transport
+        self._client: httpx.AsyncClient | None = None
+        self._client_loop = None
+
+    def _http(self) -> httpx.AsyncClient:
+        """One connection to the Meta Model API, kept open: setting up a new secure
+        connection for every call added about 0.6 s each time."""
+        loop = asyncio.get_running_loop()
+        if self._client is None or self._client_loop is not loop:
+            self._client = httpx.AsyncClient(timeout=self.timeout, transport=self.transport)
+            self._client_loop = loop
+        return self._client
 
     async def transcribe(self, data: bytes, language: str) -> str:
         """Transcribe English (eng) or French (fra) speech; empty when nothing was said."""
@@ -42,15 +54,14 @@ class MuseVoiceTranscriber:
         sf.write(wav, audio, SAMPLE_RATE, format="WAV", subtype="PCM_16")
         request = {"model": self.model, "audioEncoding": "WAV", "languageBias": [LANGUAGE_NAMES[language]]}
 
-        async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
-            response = await client.post(
-                f"{self.base_url}/asr/transcribe",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                files={
-                    "request": (None, json.dumps(request), "application/json"),
-                    "audio": ("speech.wav", wav.getvalue(), "audio/wav"),
-                },
-            )
+        response = await self._http().post(
+            f"{self.base_url}/asr/transcribe",
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            files={
+                "request": (None, json.dumps(request), "application/json"),
+                "audio": ("speech.wav", wav.getvalue(), "audio/wav"),
+            },
+        )
         if response.status_code != 200:
             raise LLMError(f"Muse Voice Transcribe returned {response.status_code}: {response.text[:300]}")
         try:

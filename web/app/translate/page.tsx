@@ -3,9 +3,11 @@
 // Face-to-face interpreter: one person speaks Ewe, the other English or French.
 // Live mode listens hands-free and works out which language each person spoke.
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { Lang, OtherLang, TranslateResponse, translateAudio, translateText } from "@/lib/api";
-import { play, speakText, stopPlayback, toWav16k } from "@/lib/audio";
+import PauseControl from "@/components/PauseControl";
+import { Lang, OtherLang, StreamEvent, translateStream } from "@/lib/api";
+import { SpeechQueue, Spoken, toWav16k } from "@/lib/audio";
 import { ListenState, LiveListener } from "@/lib/live";
+import { loadPause, Pause, PAUSES, savePause } from "@/lib/pause";
 
 type Side = "ewe" | "other";
 type Speaker = "auto" | Side;
@@ -16,7 +18,7 @@ interface Entry {
   target: Lang;
   text: string;
   translation: string;
-  audio?: string | null;
+  audios: string[]; // Ewe audio, one per sentence
   wav?: Blob; // kept so a wrong language guess can be redone without speaking again
 }
 
@@ -40,11 +42,13 @@ export default function TranslatePage() {
   const [recordingSide, setRecordingSide] = useState<Side | null>(null);
   const [texts, setTexts] = useState<Record<Side, string>>({ ewe: "", other: "" });
   const [editing, setEditing] = useState<{ id: number; side: Side } | null>(null);
+  const [pause, setPause] = useState<Pause>("normal");
 
   const live = useRef<LiveListener | null>(null);
   const otherRef = useRef<OtherLang>("fra");
   const speakerRef = useRef<Speaker>("auto");
   const recorder = useRef<MediaRecorder | null>(null);
+  const speech = useRef<SpeechQueue | null>(null);
   const nextId = useRef(0);
   const listRef = useRef<HTMLElement>(null);
   const liveRef = useRef<HTMLButtonElement>(null);
@@ -55,9 +59,10 @@ export default function TranslatePage() {
       const saved = localStorage.getItem(OTHER_KEY);
       if (saved === "eng" || saved === "fra") chooseOther(saved);
     } catch {}
+    setPause(loadPause());
     return () => {
       live.current?.stop();
-      stopPlayback();
+      speech.current?.stop();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -82,36 +87,84 @@ export default function TranslatePage() {
   const speakerSource = (): Lang | "auto" =>
     speakerRef.current === "auto" ? "auto" : langOf(speakerRef.current);
 
-  async function say(entry: Entry) {
+  // Speak sentence by sentence; a newer translation cuts the old one off.
+  function startSpeaking(items: Spoken[] = []): SpeechQueue {
+    speech.current?.stop();
+    const queue = new SpeechQueue(items);
+    speech.current = queue;
     setTalking(true);
-    if (entry.target === "ewe") await play(entry.audio);
-    else await speakText(entry.translation, entry.target);
-    setTalking(false);
+    queue.finished.then(() => {
+      if (speech.current === queue) setTalking(false);
+    });
+    return queue;
   }
 
-  // Translate, show it (in place of `replaceId` when redoing one), then speak it.
-  async function run(send: () => Promise<TranslateResponse>, extra: { wav?: Blob; replaceId?: number } = {}) {
+  function say(entry: Entry) {
+    const items: Spoken[] =
+      entry.target === "ewe"
+        ? entry.audios.map((audio) => ({ audio }))
+        : [{ text: entry.translation, lang: entry.target }];
+    startSpeaking(items).end();
+  }
+
+  function choosePause(next: Pause) {
+    setPause(next);
+    savePause(next);
+    live.current?.setEndSilence(PAUSES[next].ms);
+  }
+
+  // Translate and show it (in place of `replaceId` when redoing one). Each sentence is
+  // spoken as soon as it arrives, while Muse Spark is still writing the rest.
+  async function run(events: () => AsyncIterable<StreamEvent>, extra: { wav?: Blob; replaceId?: number } = {}) {
     const listener = live.current;
     // The microphone stays off while translating and speaking, so the translation is not heard as input
     listener?.pause();
-    stopPlayback();
+    speech.current?.stop();
     setThinking(true);
     setStatus("");
+    let entryId: number | null = null;
+    let target: Lang = "ewe";
+    let queue: SpeechQueue | null = null;
     try {
-      const data = await send();
-      const entry: Entry = {
-        id: extra.replaceId ?? nextId.current++,
-        source: data.source, target: data.target,
-        text: data.text, translation: data.translation, audio: data.audio_wav_base64, wav: extra.wav,
-      };
-      setEntries((prev) =>
-        extra.replaceId === undefined ? [...prev, entry] : prev.map((e) => (e.id === extra.replaceId ? entry : e)),
-      );
-      setThinking(false);
-      if (data.tts_error) setStatus("Translation ready (voice unavailable)");
-      await say(entry);
+      for await (const event of events()) {
+        if (event.type === "heard" && event.source && event.target) {
+          target = event.target;
+          const entry: Entry = {
+            id: extra.replaceId ?? nextId.current++,
+            source: event.source, target,
+            text: event.text, translation: "", audios: [], wav: extra.wav,
+          };
+          entryId = entry.id;
+          setEntries((prev) =>
+            extra.replaceId === undefined ? [...prev, entry] : prev.map((e) => (e.id === extra.replaceId ? entry : e)),
+          );
+        } else if (event.type === "sentence" && entryId !== null) {
+          const id = entryId;
+          const audio = event.audio_wav_base64;
+          setEntries((prev) =>
+            prev.map((e) =>
+              e.id === id
+                ? {
+                    ...e,
+                    translation: e.translation ? `${e.translation} ${event.text}` : event.text,
+                    audios: audio ? [...e.audios, audio] : e.audios,
+                  }
+                : e,
+            ),
+          );
+          if (!queue) {
+            setThinking(false);
+            queue = startSpeaking();
+          }
+          queue.add(target === "ewe" ? { audio } : { text: event.text, lang: target });
+          if (event.tts_error) setStatus("Translation ready (voice unavailable)");
+        }
+      }
+      queue?.end();
+      await queue?.finished;
     } catch (e) {
       setStatus((e as Error).message);
+      queue?.stop();
     } finally {
       setThinking(false);
       if (listener && listener === live.current) listener.resume();
@@ -120,7 +173,7 @@ export default function TranslatePage() {
 
   // --- Fixing a translation ---
   function sayAgain(entry: Entry) {
-    stopPlayback();
+    speech.current?.stop();
     setEntries((prev) => prev.filter((e) => e.id !== entry.id));
     if (liveOn) {
       chooseSpeaker(sideOf(entry.source));
@@ -133,7 +186,8 @@ export default function TranslatePage() {
   function wrongLanguage(entry: Entry) {
     if (!entry.wav || thinking) return;
     const source = entry.source === "ewe" ? otherRef.current : "ewe";
-    run(() => translateAudio(entry.wav!, otherRef.current, source), { wav: entry.wav, replaceId: entry.id });
+    const wav = entry.wav;
+    run(() => translateStream(otherRef.current, source, { audio: wav }), { wav, replaceId: entry.id });
   }
 
   function edit(entry: Entry) {
@@ -146,13 +200,14 @@ export default function TranslatePage() {
   // --- Live: hands-free ---
   async function startLive() {
     const listener = new LiveListener({
-      onUtterance: (wav) => run(() => translateAudio(wav, otherRef.current, speakerSource()), { wav }),
+      onUtterance: (wav) => run(() => translateStream(otherRef.current, speakerSource(), { audio: wav }), { wav }),
       onState: (s) => {
         setHeard(s);
         if (s === "hearing") setStatus("");
       },
       onLevel: (rms) => liveRef.current?.style.setProperty("--level", String(Math.min(1, rms * 10))),
     });
+    listener.setEndSilence(PAUSES[pause].ms);
     await listener.start();
     live.current = listener;
     setLiveOn(true);
@@ -164,7 +219,7 @@ export default function TranslatePage() {
     live.current = null;
     liveRef.current?.style.setProperty("--level", "0");
     setLiveOn(false);
-    stopPlayback();
+    speech.current?.stop();
   }
 
   // --- Tap to talk on one side ---
@@ -176,9 +231,9 @@ export default function TranslatePage() {
     rec.onstop = async () => {
       stream.getTracks().forEach((t) => t.stop());
       const wav = await toWav16k(new Blob(chunks, { type: rec.mimeType }));
-      run(() => translateAudio(wav, otherRef.current, langOf(side)), { wav });
+      run(() => translateStream(otherRef.current, langOf(side), { audio: wav }), { wav });
     };
-    stopPlayback();
+    speech.current?.stop();
     rec.start();
     recorder.current = rec;
     setRecordingSide(side);
@@ -226,9 +281,7 @@ export default function TranslatePage() {
     const replaceId = editing?.side === side ? editing.id : undefined;
     setTexts((prev) => ({ ...prev, [side]: "" }));
     setEditing(null);
-    const source = langOf(side);
-    const target = side === "ewe" ? otherRef.current : "ewe";
-    await run(() => translateText(value, source, target), { replaceId });
+    await run(() => translateStream(otherRef.current, langOf(side), { text: value }), { replaceId });
   }
 
   function changeOther(lang: OtherLang) {
@@ -335,6 +388,7 @@ export default function TranslatePage() {
             </div>
           </div>
         )}
+        {liveOn && <PauseControl value={pause} onChange={choosePause} />}
         <p className="status">{shownStatus}</p>
         <button
           ref={liveRef}

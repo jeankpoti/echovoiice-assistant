@@ -1,0 +1,44 @@
+Standard_Ewe,User_Input_Variation,Variation_Type,English_Translation,Dialect_Note,Status
+Woezɔ,Woezo,Orthography,Welcome,Latin Keyboard Filter,ok
+Woezɔ,Wayzo,Phonetic Text,Welcome,Conversational English-spelling,ok
+Woezɔ,Woezor,Phonetic Text,Welcome,Common Ghanaian English Spelling,ok
+Eƒo ã?,Efo a?,Orthography,How are you? (Lit: Have you woken up?),Latin Keyboard Filter,check
+Eƒo ã?,Fo a,Contraction,How are you?,Rapid Conversational Speech,check
+"Ɛ̃, meƒo ã","E, mefo a",Orthography,"Yes, I am fine",Latin Keyboard Filter,check
+"Ɛ̃, meƒo ã",Meƒo,Contraction,I am fine,Short Response Variant,check
+Ŋdi na wò,Ndi na wo,Orthography,Good morning to you,Latin Keyboard Filter,ok
+Ŋdɔ na wò,Ndo na wo,Orthography,Good afternoon to you,Latin Keyboard Filter,ok
+Fiẽ na wò,Fie na wo,Orthography,Good evening to you,Latin Keyboard Filter,ok
+Dɔ dzoe,Do dzoe,Orthography,Sleep well / Good night,Latin Keyboard Filter,ok
+Dɔ dzoe,Do nyo,Dialect Swap,Sleep well,Inland (Ʋedome) Variant,check
+Mia dogo,Mya dogo,Phonetic Text,Goodbye / See you later,Rapid Speech Shift,ok
+Mia dogo,Mia ga dogo,Phrase Extension,We will meet again,Formal Goodbye Variant,ok
+Akpe,Akpe kaka,Phrase Extension,Thank you very much,Conversational Emphasis,ok
+Akpe,Akpe na wò,Phrase Extension,Thank you to you,Targeted Recipient Form,ok
+Afika yim nele?,Gane yi ele?,Dialect Swap,Where are you going?,Inland Kpelegbe / Ho,ok
+Afika yim nele?,Fike wole yi o?,Dialect Swap,Where are you going?,Gen / Mina (Togo/Benin border),ok
+Afika yim nele?,Afika yim nele,Orthography,Where are you going?,No punctuation fallback,ok
+Afika yim nele?,Afike nle yim?,Dialect Swap,Where are you going?,Anlo Variant Grammatical Order,ok
+Neka ƒe gbe nɔ m?,Neka fe gbe no m?,Orthography,What language are you speaking?,Latin Keyboard Filter,check
+Neka ƒe gbe nɔ m?,Gbe ka gblɔm nèle?,Dialect Swap,What language are you speaking?,Standard Alternative Syntax,check
+Aleke woyɔna esia?,Aleke woyona esia?,Orthography,What is this called?,Latin Keyboard Filter,ok
+Aleke woyɔna esia?,Nuka nye esia?,Dialect Swap,What is this?,Simplified Phrase Swap,check
+Afika mekpɔa adzɔge?,Afika mkpa adzoge?,Contraction,Where do I pay the fare?,Rapid Speech Drop,ok
+Fikae tɔtrɔa le?,Afikae tɔtrɔa le?,Orthography,Where is the restroom / change?,Vowel Drop Fallback,ok
+Ɛ̃,Eee,Vowel Shift,Yes,Casual Elongation,ok
+Ɛ̃,E,Orthography,Yes,Latin Keyboard Filter,ok
+Ao,Aoo,Vowel Shift,No,Emphatic Negation,ok
+Ao,Gbeɖe,Dialect Swap,Never / No,Strong Absolute Negation,check
+Meɖe kuku,Mede kuku,Orthography,Please,Latin Keyboard Filter,ok
+Meɖe kuku,Taflatse,Dialect Swap,Please / Excuse me,Akan/Ga loanword variant usage,check
+Mese egme,Mese egbe,Dialect Swap,I understand,Inland Dialect Idiom,check
+Nyemese egme o,Nyemese egbe o,Dialect Swap,I do not understand,Inland Dialect Idiom,check
+Nyemese egme o,Nyemese sese o,Phonetic Text,I don't understand at all,Conversational Emphasis,check
+Ame,Amor,Dialect Swap,Person / Human,Southeastern Coastal Slang,ok
+Ga,Gah,Phonetic Text,Money / Metal,Phonetic Stress Pad,ok
+Nukuɖeɖe,Nukudede,Orthography,Smiling / Laughing,Double Character Replacement,check
+Ʋu,Vu,Orthography,Vehicle / Car / Blood,Latin Keyboard Filter,ok
+Ʋu,Wu,Phonetic Text,Vehicle / Car / Blood,Acoustic Approximation Swap,check
+Ŋdi,Ndi,Orthography,Morning,Nasal Velar Fallback,ok
+Toye,Togbee,Dialect Swap,Grandfather / Elder,Inland vs Coastal Honorific Spelling,check
+Enye,Enyor,Vowel Shift,It is mine,Regional Intonation Fallback,check
